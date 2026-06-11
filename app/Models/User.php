@@ -129,6 +129,16 @@ class User extends Authenticatable
         return $this->hasMany(Order::class, 'user_id', 'id');
     }
 
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(UserSubscription::class, 'user_id', 'id');
+    }
+
+    public function activeSubscriptions(): HasMany
+    {
+        return $this->subscriptions()->active();
+    }
+
     public function stat(): HasMany
     {
         return $this->hasMany(StatUser::class, 'user_id', 'id');
@@ -158,9 +168,8 @@ class User extends Authenticatable
      */
     public function isActive(): bool
     {
-        return !$this->banned && 
-               ($this->expired_at === null || $this->expired_at > time()) &&
-               $this->plan_id !== null;
+        return !$this->banned
+            && app(\App\Services\UserSubscriptionService::class)->hasActiveSubscriptions($this);
     }
 
     /** 
@@ -168,7 +177,8 @@ class User extends Authenticatable
      */
     public function isAvailable(): bool
     {     
-        return $this->isActive() && $this->getRemainingTraffic() > 0;   
+        return !$this->banned
+            && app(\App\Services\UserSubscriptionService::class)->hasAvailableSubscriptions($this);
     }
 
     /**

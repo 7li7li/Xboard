@@ -4,6 +4,8 @@ namespace App\Http\Controllers\V1\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\Server;
+use App\Models\User;
+use App\Models\UserSubscription;
 use App\Protocols\General;
 use App\Services\Plugin\HookManager;
 use App\Services\ServerService;
@@ -38,10 +40,41 @@ class ClientController extends Controller
             'types' => ['nullable', 'string'],
             'filter' => ['nullable', 'string'],
             'flag' => ['nullable', 'string'],
+            'subscription_id' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $user = $request->user();
         $userService = new UserService();
+
+        if ($request->filled('subscription_id')) {
+            $subscription = UserSubscription::with('plan')
+                ->where('id', $request->integer('subscription_id'))
+                ->where('user_id', $user->id)
+                ->available()
+                ->first();
+
+            if (!$subscription || $user->banned) {
+                HookManager::call('client.subscribe.unavailable');
+                return response('', 403, ['Content-Type' => 'text/plain']);
+            }
+
+            $groupId = $this->resolveSubscriptionGroupId($subscription);
+            if (!$groupId) {
+                HookManager::call('client.subscribe.unavailable');
+                return response('', 403, ['Content-Type' => 'text/plain']);
+            }
+
+            $scopedUser = $this->makeSubscriptionScopedUser($user, $subscription);
+            $servers = ServerService::getAvailableServersForGroups($scopedUser, [$groupId]);
+            $servers = HookManager::filter('client.subscribe.servers', $servers, $scopedUser, $request);
+
+            return $this->doSubscribe(
+                $request,
+                $scopedUser,
+                $servers,
+                $this->getSubscriptionResetDay($subscription)
+            );
+        }
 
         if (!$userService->isAvailable($user)) {
             HookManager::call('client.subscribe.unavailable');
@@ -51,7 +84,7 @@ class ClientController extends Controller
         return $this->doSubscribe($request, $user);
     }
 
-    public function doSubscribe(Request $request, $user, $servers = null)
+    public function doSubscribe(Request $request, $user, $servers = null, ?int $resetDay = null)
     {
         if ($servers === null) {
             $servers = ServerService::getAvailableServers($user);
@@ -72,7 +105,7 @@ class ClientController extends Controller
             filterKeywords: $filterKeywords
         );
 
-        $this->setSubscribeInfoToServers($serversFiltered, $user, count($servers) - count($serversFiltered));
+        $this->setSubscribeInfoToServers($serversFiltered, $user, count($servers) - count($serversFiltered), $resetDay);
         $serversFiltered = $this->addPrefixToServerName($serversFiltered);
 
         // Instantiate the protocol class with filtered servers and client info
@@ -190,7 +223,48 @@ class ClientController extends Controller
         ];
     }
 
-    private function setSubscribeInfoToServers(&$servers, $user, $rejectServerCount = 0)
+    private function makeSubscriptionScopedUser(User $user, UserSubscription $subscription): User
+    {
+        $scopedUser = clone $user;
+        $scopedUser->forceFill([
+            'plan_id' => $subscription->plan_id,
+            'group_id' => $this->resolveSubscriptionGroupId($subscription),
+            'transfer_enable' => $subscription->transfer_enable,
+            'u' => $subscription->u,
+            'd' => $subscription->d,
+            'expired_at' => $subscription->expired_at,
+            'speed_limit' => $subscription->speed_limit,
+            'device_limit' => $subscription->device_limit,
+            'next_reset_at' => $subscription->next_reset_at,
+            'last_reset_at' => $subscription->last_reset_at,
+            'reset_count' => $subscription->reset_count,
+        ]);
+        $scopedUser->setRelation('plan', $subscription->plan);
+
+        return $scopedUser;
+    }
+
+    private function getSubscriptionResetDay(UserSubscription $subscription): ?int
+    {
+        if (!$subscription->next_reset_at) {
+            return null;
+        }
+
+        $seconds = (int) $subscription->next_reset_at - time();
+        if ($seconds <= 0) {
+            return 0;
+        }
+
+        return (int) ceil($seconds / 86400);
+    }
+
+    private function resolveSubscriptionGroupId(UserSubscription $subscription): ?int
+    {
+        $groupId = $subscription->group_id ?: $subscription->plan?->group_id;
+        return $groupId ? (int) $groupId : null;
+    }
+
+    private function setSubscribeInfoToServers(&$servers, $user, $rejectServerCount = 0, ?int $resetDay = null)
     {
         if (!isset($servers[0]))
             return;
@@ -205,8 +279,10 @@ class ClientController extends Controller
         $totalTraffic = $user['transfer_enable'];
         $remainingTraffic = Helper::trafficConvert($totalTraffic - $useTraffic);
         $expiredDate = $user['expired_at'] ? date('Y-m-d', $user['expired_at']) : __('长期有效');
-        $userService = new UserService();
-        $resetDay = $userService->getResetDay($user);
+        if ($resetDay === null) {
+            $userService = new UserService();
+            $resetDay = $userService->getResetDay($user);
+        }
         array_unshift($servers, array_merge($servers[0], [
             'name' => "套餐到期：{$expiredDate}",
         ]));

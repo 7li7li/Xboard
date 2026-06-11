@@ -22,7 +22,7 @@ class OrderController extends Controller
 
     public function detail(Request $request)
     {
-        $order = Order::with(['user', 'plan', 'commission_log', 'invite_user'])->find($request->input('id'));
+        $order = Order::with(['user', 'plan', 'subscription.plan', 'commission_log', 'invite_user'])->find($request->input('id'));
         if (!$order)
             return $this->fail([400202, '订单不存在']);
         if ($order->surplus_order_ids) {
@@ -36,7 +36,7 @@ class OrderController extends Controller
     {
         $current = $request->input('current', 1);
         $pageSize = $request->input('pageSize', 10);
-        $orderModel = Order::with('plan:id,name');
+        $orderModel = Order::with(['plan:id,name', 'subscription:id,plan_id,status,expired_at']);
 
         if ($request->boolean('is_commission')) {
             $orderModel->whereNotNull('invite_user_id')
@@ -220,20 +220,18 @@ class OrderController extends Controller
             $orderService = new OrderService($order);
             $order->user_id = $user->id;
             $order->plan_id = $plan->id;
+            $order->subscription_id = $request->integer('subscription_id') ?: null;
             $period = $request->input('period');
             $order->period = PlanService::getPeriodKey((string) $period);
             $order->trade_no = Helper::guid();
             $order->total_amount = $request->input('total_amount');
-
-            if (PlanService::getPeriodKey((string) $order->period) === Plan::PERIOD_RESET_TRAFFIC) {
-                $order->type = Order::TYPE_RESET_TRAFFIC;
-            } else if ($user->plan_id !== NULL && $order->plan_id !== $user->plan_id) {
-                $order->type = Order::TYPE_UPGRADE;
-            } else if ($user->expired_at > time() && $order->plan_id == $user->plan_id) {
-                $order->type = Order::TYPE_RENEWAL;
-            } else {
-                $order->type = Order::TYPE_NEW_PURCHASE;
+            $intent = $request->input('intent', OrderService::INTENT_PURCHASE);
+            if ($order->period === Plan::PERIOD_RESET_TRAFFIC) {
+                $intent = OrderService::INTENT_RESET;
             }
+
+            (new PlanService($plan))->validatePurchase($user, $order->period, $order->subscription_id, $intent);
+            $orderService->setOrderType($user, $intent);
 
             $orderService->setInvite($user);
 

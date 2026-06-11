@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\User;
+use App\Services\UserSubscriptionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -32,16 +33,26 @@ class TrafficFetchJob implements ShouldQueue
     public function handle(): void
     {
         $userIds = array_keys($this->data);
+        $users = User::whereIn('id', $userIds)->get()->keyBy('id');
+        $subscriptionService = app(UserSubscriptionService::class);
 
         foreach ($this->data as $uid => $v) {
-            User::where('id', $uid)
-                ->incrementEach(
-                    [
-                        'u' => $v[0] * $this->server['rate'],
-                        'd' => $v[1] * $this->server['rate'],
-                    ],
-                    ['t' => time()]
-                );
+            $user = $users->get((int) $uid);
+            if (!$user) {
+                continue;
+            }
+
+            $subscriptionService->consumeTraffic(
+                $user,
+                $this->server['group_ids'] ?? [],
+                (float) ($this->server['rate'] ?? 1),
+                (int) $v[0],
+                (int) $v[1]
+            );
+
+            User::withoutEvents(function () use ($user) {
+                $user->forceFill(['t' => time()])->save();
+            });
         }
 
         if (!empty($userIds)) {

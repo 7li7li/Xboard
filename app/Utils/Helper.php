@@ -120,9 +120,12 @@ class Helper
         }
     }
 
-    public static function getSubscribeUrl(string $token, $subscribeUrl = null)
+    public static function getSubscribeUrl(string $token, $subscribeUrl = null, array $query = [])
     {
         $path = route('client.subscribe', ['token' => $token], false);
+        if (!empty($query)) {
+            $path .= '?' . http_build_query($query);
+        }
         
         if ($subscribeUrl) {
             $finalUrl = rtrim($subscribeUrl, '/') . $path;

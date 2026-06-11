@@ -89,8 +89,11 @@ class UserController extends Controller
     {
         $user = User::where('id', $request->user()->id)
             ->select([
+                'id',
                 'email',
                 'transfer_enable',
+                'u',
+                'd',
                 'last_login_at',
                 'created_at',
                 'banned',
@@ -103,13 +106,18 @@ class UserController extends Controller
                 'discount',
                 'commission_rate',
                 'telegram_id',
-                'uuid'
+                'uuid',
+                'device_limit',
+                'speed_limit',
+                'next_reset_at'
             ])
             ->first();
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        $user->load('subscriptions.plan');
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
+        $user['subscriptions'] = $this->formatSubscriptions($user);
         return $this->success($user);
     }
 
@@ -132,6 +140,7 @@ class UserController extends Controller
     {
         $user = User::where('id', $request->user()->id)
             ->select([
+                'id',
                 'plan_id',
                 'token',
                 'expired_at',
@@ -148,6 +157,7 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        $user->load('subscriptions.plan');
         if ($user->plan_id) {
             $user['plan'] = Plan::find($user->plan_id);
             if (!$user['plan']) {
@@ -157,8 +167,46 @@ class UserController extends Controller
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
+        $user['subscriptions'] = $this->formatSubscriptions($user);
         $user = HookManager::filter('user.subscribe.response', $user);
         return $this->success($user);
+    }
+
+    protected function formatSubscriptions(User $user): array
+    {
+        return $user->subscriptions
+            ->sortByDesc('id')
+            ->map(function ($subscription) use ($user) {
+                $payload = [
+                    'id' => $subscription->id,
+                    'plan_id' => $subscription->plan_id,
+                    'plan' => $subscription->plan,
+                    'status' => $subscription->status,
+                    'started_at' => $subscription->started_at,
+                    'expired_at' => $subscription->expired_at,
+                    'transfer_enable' => $subscription->transfer_enable,
+                    'u' => $subscription->u,
+                    'd' => $subscription->d,
+                    'total_used' => $subscription->getTotalUsedTraffic(),
+                    'remaining' => $subscription->getRemainingTraffic(),
+                    'group_id' => $subscription->group_id,
+                    'speed_limit' => $subscription->speed_limit,
+                    'device_limit' => $subscription->device_limit,
+                    'next_reset_at' => $subscription->next_reset_at,
+                    'last_reset_at' => $subscription->last_reset_at,
+                    'reset_count' => $subscription->reset_count,
+                ];
+
+                if (!empty($user->token)) {
+                    $payload['subscribe_url'] = Helper::getSubscribeUrl($user->token, null, [
+                        'subscription_id' => $subscription->id,
+                    ]);
+                }
+
+                return $payload;
+            })
+            ->values()
+            ->all();
     }
 
     public function resetSecurity(Request $request)

@@ -54,7 +54,32 @@ class ServerService
      */
     public static function getAvailableServers(User $user): array
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)
+        $groupIds = app(UserSubscriptionService::class)->getAvailableGroupIds($user);
+        return self::getAvailableServersForGroups($user, $groupIds);
+    }
+
+    /**
+     * Get enabled nodes available to the given user in specific permission groups.
+     */
+    public static function getAvailableServersForGroups(User $user, array $groupIds): array
+    {
+        $groupIds = collect($groupIds)
+            ->filter(fn($groupId) => $groupId !== null && $groupId !== '')
+            ->map(fn($groupId) => (int) $groupId)
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($groupIds)) {
+            return [];
+        }
+
+        $servers = Server::where(function ($query) use ($groupIds) {
+                foreach ($groupIds as $groupId) {
+                    $query->orWhereJsonContains('group_ids', (string) $groupId);
+                    $query->orWhereJsonContains('group_ids', (int) $groupId);
+                }
+            })
             ->where('show', true)
             ->where(function ($query) {
                 $query->whereNull('transfer_enable')
@@ -89,25 +114,7 @@ class ServerService
      */
     public static function getAvailableUsers(Server $node)
     {
-        $groupIds = $node->group_ids ?? [];
-        if (empty($groupIds)) {
-            return collect();
-        }
-        $users = User::toBase()
-            ->whereIn('group_id', $groupIds)
-            ->whereRaw('u + d < transfer_enable')
-            ->where(function ($query) {
-                $query->where('expired_at', '>=', time())
-                    ->orWhere('expired_at', NULL);
-            })
-            ->where('banned', 0)
-            ->select([
-                'id',
-                'uuid',
-                'speed_limit',
-                'device_limit'
-            ])
-            ->get();
+        $users = app(UserSubscriptionService::class)->getAvailableNodeUsers($node);
         return HookManager::filter('server.users.get', $users, $node);
     }
 

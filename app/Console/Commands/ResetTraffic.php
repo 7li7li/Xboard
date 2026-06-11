@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\User;
 use App\Models\TrafficResetLog;
 use App\Services\TrafficResetService;
+use App\Services\UserSubscriptionService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -169,10 +170,7 @@ class ResetTraffic extends Command
 
     foreach ($nullUsers as $user) {
       try {
-        $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
-        if ($nextResetTime) {
-          $user->next_reset_at = $nextResetTime->timestamp;
-          $user->save();
+        if ($this->recalculateUserSubscriptionResetTimes($user, true)) {
           $fixedCount++;
         }
       } catch (\Exception $e) {
@@ -218,10 +216,7 @@ class ResetTraffic extends Command
 
     foreach ($allUsers as $user) {
       try {
-        $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
-        if ($nextResetTime) {
-          $user->next_reset_at = $nextResetTime->timestamp;
-          $user->save();
+        if ($this->recalculateUserSubscriptionResetTimes($user)) {
           $fixedCount++;
         }
       } catch (\Exception $e) {
@@ -249,40 +244,60 @@ class ResetTraffic extends Command
 
   private function getResetQuery()
   {
-    return User::where('next_reset_at', '<=', time())
-      ->whereNotNull('next_reset_at')
-      ->where(function ($query) {
-        $query->where('expired_at', '>', time())
-          ->orWhereNull('expired_at');
+    return User::whereHas('subscriptions', function ($query) {
+        $query->active()
+          ->whereNotNull('next_reset_at')
+          ->where('next_reset_at', '<=', time());
       })
       ->where('banned', 0)
-      ->whereNotNull('plan_id');
+      ->with('subscriptions.plan');
+  }
+
+  private function recalculateUserSubscriptionResetTimes(User $user, bool $onlyMissing = false): bool
+  {
+    $changed = false;
+    $subscriptions = $user->subscriptions()->active()->with('plan')->get();
+
+    foreach ($subscriptions as $subscription) {
+      if ($onlyMissing && $subscription->next_reset_at !== null) {
+        continue;
+      }
+
+      $nextResetTime = $this->trafficResetService->calculateNextResetTimeForSubscription($subscription);
+      if (!$nextResetTime && $onlyMissing) {
+        continue;
+      }
+
+      $subscription->next_reset_at = $nextResetTime?->timestamp;
+      $subscription->save();
+      $changed = true;
+    }
+
+    if ($changed) {
+      app(UserSubscriptionService::class)->syncUserAggregate($user);
+    }
+
+    return $changed;
   }
 
 
 
   private function getNullResetTimeUsers()
   {
-    return User::whereNull('next_reset_at')
-      ->whereNotNull('plan_id')
-      ->where(function ($query) {
-        $query->where('expired_at', '>', time())
-          ->orWhereNull('expired_at');
+    return User::whereHas('subscriptions', function ($query) {
+        $query->active()
+          ->whereNull('next_reset_at');
       })
       ->where('banned', 0)
-      ->with('plan:id,name,reset_traffic_method')
+      ->with('subscriptions.plan')
       ->get();
   }
 
   private function getAllUsers()
   {
-    return User::whereNotNull('plan_id')
-      ->where(function ($query) {
-        $query->where('expired_at', '>', time())
-          ->orWhereNull('expired_at');
-      })
+    return User::whereHas('subscriptions', fn($query) => $query->active())
       ->where('banned', 0)
-      ->with('plan:id,name,reset_traffic_method')
+      ->with('subscriptions.plan')
       ->get();
   }
 

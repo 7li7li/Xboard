@@ -5,7 +5,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no" />
   <title>{{$title}}</title>
-  <script type="module" crossorigin src="/theme/{{$theme}}/assets/umi.js"></script>
+  @php
+    $umiPath = public_path('theme/' . $theme . '/assets/umi.js');
+    $multiSubscriptionPath = public_path('theme/' . $theme . '/assets/multi-subscription.js');
+    $umiVersion = file_exists($umiPath) ? filemtime($umiPath) : time();
+    $multiSubscriptionVersion = file_exists($multiSubscriptionPath) ? filemtime($multiSubscriptionPath) : $umiVersion;
+  @endphp
+  <script type="module" crossorigin src="/theme/{{$theme}}/assets/umi.js?v={{$umiVersion}}"></script>
 </head>
 
 <body>
@@ -34,6 +40,7 @@
     }
   </script>
   <div id="app"></div>
+  <script defer src="/theme/{{$theme}}/assets/multi-subscription.js?v={{$multiSubscriptionVersion}}"></script>
   {!! $theme_config['custom_html'] !!}
 </body>
 

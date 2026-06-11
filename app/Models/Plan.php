@@ -317,6 +317,11 @@ class Plan extends Model
         return $this->hasMany(Order::class);
     }
 
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(UserSubscription::class, 'plan_id', 'id');
+    }
+
     /**
      * 设置流量重置方式
      *

@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Server;
 use App\Models\User;
+use App\Models\UserSubscription;
 use App\Services\NodeSyncService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Redis;
@@ -22,42 +22,26 @@ class CheckTrafficExceeded extends Command
 
         $pendingUserIds = array_map('intval', Redis::spop('traffic:pending_check', $count));
 
-        $exceededUsers = User::toBase()
-            ->whereIn('id', $pendingUserIds)
+        $exceededUserIds = UserSubscription::whereIn('user_id', $pendingUserIds)
+            ->active()
             ->whereRaw('u + d >= transfer_enable')
             ->where('transfer_enable', '>', 0)
-            ->where('banned', 0)
-            ->select(['id', 'group_id'])
-            ->get();
+            ->pluck('user_id')
+            ->unique()
+            ->values();
 
-        if ($exceededUsers->isEmpty()) {
+        if ($exceededUserIds->isEmpty()) {
             return;
         }
 
-        $groupedUsers = $exceededUsers->groupBy('group_id');
         $notifiedCount = 0;
+        $users = User::whereIn('id', $exceededUserIds)->get();
 
-        foreach ($groupedUsers as $groupId => $users) {
-            if (!$groupId) {
-                continue;
-            }
-
-            $userIdsInGroup = $users->pluck('id')->toArray();
-            $servers = Server::whereJsonContains('group_ids', (string) $groupId)->get();
-
-            foreach ($servers as $server) {
-                if (!NodeSyncService::isNodeOnline($server->id)) {
-                    continue;
-                }
-
-                NodeSyncService::push($server->id, 'sync.user.delta', [
-                    'action' => 'remove',
-                    'users' => array_map(fn($id) => ['id' => $id], $userIdsInGroup),
-                ]);
-                $notifiedCount++;
-            }
+        foreach ($users as $user) {
+            NodeSyncService::notifyUserChanged($user);
+            $notifiedCount++;
         }
 
-        $this->info("Checked " . count($pendingUserIds) . " users, notified {$notifiedCount} nodes for " . $exceededUsers->count() . " exceeded users.");
+        $this->info("Checked " . count($pendingUserIds) . " users, refreshed {$notifiedCount} exceeded users.");
     }
 }

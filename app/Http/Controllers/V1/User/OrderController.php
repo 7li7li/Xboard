@@ -61,8 +61,13 @@ class OrderController extends Controller
     public function save(OrderSave $request)
     {
         $request->validate([
-            'plan_id' => 'required|exists:App\Models\Plan,id',
-            'period' => 'required|string'
+            'plan_id' => 'required_without:items|nullable|exists:App\Models\Plan,id',
+            'period' => 'required_without:items|nullable|string',
+            'subscription_id' => 'nullable|integer',
+            'intent' => 'nullable|in:purchase,renew,upgrade,reset',
+            'items' => 'nullable|array',
+            'items.*.subscription_id' => 'required_with:items|integer',
+            'items.*.period' => 'required_with:items|string',
         ]);
 
         $user = User::findOrFail($request->user()->id);
@@ -72,16 +77,35 @@ class OrderController extends Controller
             throw new ApiException(__('You have an unpaid or pending order, please try again later or cancel it'));
         }
 
+        $intent = $request->input('intent', OrderService::INTENT_PURCHASE);
+        $items = $request->input('items', []);
+        if ($intent === OrderService::INTENT_RENEW && is_array($items) && count($items) > 0) {
+            $order = OrderService::createBatchRenewalFromRequest(
+                $user,
+                $items,
+                $request->input('coupon_code')
+            );
+
+            return $this->success($order->trade_no);
+        }
+
         $plan = Plan::findOrFail($request->input('plan_id'));
         $planService = new PlanService($plan);
 
-        $planService->validatePurchase($user, $request->input('period'));
+        $subscriptionId = $request->integer('subscription_id') ?: null;
+        if ($request->input('period') === Plan::PERIOD_RESET_TRAFFIC || $request->input('period') === 'reset_price') {
+            $intent = OrderService::INTENT_RESET;
+        }
+
+        $planService->validatePurchase($user, $request->input('period'), $subscriptionId, $intent);
 
         $order = OrderService::createFromRequest(
             $user,
             $plan,
             $request->input('period'),
-            $request->input('coupon_code')
+            $request->input('coupon_code'),
+            $subscriptionId,
+            $intent
         );
 
         return $this->success($order->trade_no);

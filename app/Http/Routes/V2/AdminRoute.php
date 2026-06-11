@@ -129,6 +129,9 @@ class AdminRoute
                 $router->any('/fetch', [UserController::class, 'fetch']);
                 $router->post('/update', [UserController::class, 'update']);
                 $router->get('/getUserInfoById', [UserController::class, 'getUserInfoById']);
+                $router->post('/subscription/fetch', [UserController::class, 'fetchSubscription']);
+                $router->post('/subscription/save', [UserController::class, 'saveSubscription']);
+                $router->post('/subscription/drop', [UserController::class, 'dropSubscription']);
                 $router->post('/generate', [UserController::class, 'generate']);
                 $router->post('/dumpCSV', [UserController::class, 'dumpCSV']);
                 $router->post('/sendMail', [UserController::class, 'sendMail']);

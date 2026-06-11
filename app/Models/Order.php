@@ -12,6 +12,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int $id
  * @property int $user_id
  * @property int $plan_id
+ * @property int|null $subscription_id
+ * @property array|null $items
  * @property int|null $payment_id
  * @property string $period
  * @property string $trade_no
@@ -49,6 +51,7 @@ class Order extends Model
     protected $casts = [
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
+        'items' => 'array',
         'surplus_order_ids' => 'array',
         'handling_amount' => 'integer'
     ];
@@ -108,6 +111,11 @@ class Order extends Model
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class, 'plan_id', 'id');
+    }
+
+    public function subscription(): BelongsTo
+    {
+        return $this->belongsTo(UserSubscription::class, 'subscription_id', 'id');
     }
 
     /**

@@ -6,7 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\PlanSave;
 use App\Models\Order;
 use App\Models\Plan;
-use App\Models\User;
+use App\Models\UserSubscription;
+use App\Services\UserSubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -20,13 +21,8 @@ class PlanController extends Controller
                 'group:id,name'
             ])
             ->withCount([
-                'users',
-                'users as active_users_count' => function ($query) {
-                    $query->where(function ($q) {
-                        $q->where('expired_at', '>', time())
-                          ->orWhereNull('expired_at');
-                    });
-                }
+                'subscriptions as users_count',
+                'subscriptions as active_users_count' => fn($query) => $query->active(),
             ])
             ->get();
 
@@ -46,12 +42,24 @@ class PlanController extends Controller
             DB::beginTransaction();
             try {
                 if ($request->input('force_update')) {
-                    User::where('plan_id', $plan->id)->update([
+                    UserSubscription::where('plan_id', $plan->id)->update([
                         'group_id' => $params['group_id'],
                         'transfer_enable' => $params['transfer_enable'] * 1073741824,
                         'speed_limit' => $params['speed_limit'],
                         'device_limit' => $params['device_limit'],
                     ]);
+
+                    $subscriptionService = app(UserSubscriptionService::class);
+                    UserSubscription::where('plan_id', $plan->id)
+                        ->select('user_id')
+                        ->distinct()
+                        ->with('user')
+                        ->get()
+                        ->each(function (UserSubscription $subscription) use ($subscriptionService) {
+                            if ($subscription->user) {
+                                $subscriptionService->syncUserAggregate($subscription->user);
+                            }
+                        });
                 }
                 $plan->update($params);
                 DB::commit();
@@ -73,7 +81,7 @@ class PlanController extends Controller
         if (Order::where('plan_id', $request->input('id'))->first()) {
             return $this->fail([400201, '该订阅下存在订单无法删除']);
         }
-        if (User::where('plan_id', $request->input('id'))->first()) {
+        if (UserSubscription::where('plan_id', $request->input('id'))->first()) {
             return $this->fail([400201, '该订阅下存在用户无法删除']);
         }
         

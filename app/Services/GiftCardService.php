@@ -146,6 +146,7 @@ class GiftCardService
     protected function giveRewards(array $rewards): void
     {
         $userService = app(UserService::class);
+        $subscriptionService = app(UserSubscriptionService::class);
 
         if (isset($rewards['balance']) && $rewards['balance'] > 0) {
             if (!$userService->addBalance($this->user->id, $rewards['balance'])) {
@@ -154,16 +155,19 @@ class GiftCardService
         }
 
         if (isset($rewards['transfer_enable']) && $rewards['transfer_enable'] > 0) {
-            $this->user->transfer_enable = ($this->user->transfer_enable ?? 0) + $rewards['transfer_enable'];
+            $subscriptionService->addBonusTraffic($this->user, (int) $rewards['transfer_enable']);
+            $this->user->refresh();
         }
 
         if (isset($rewards['device_limit']) && $rewards['device_limit'] > 0) {
-            $this->user->device_limit = ($this->user->device_limit ?? 0) + $rewards['device_limit'];
+            $subscriptionService->addBonusDeviceLimit($this->user, (int) $rewards['device_limit']);
+            $this->user->refresh();
         }
 
         if (isset($rewards['reset_package']) && $rewards['reset_package']) {
-            if ($this->user->plan_id) {
+            if ($subscriptionService->hasActiveSubscriptions($this->user)) {
                 app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_GIFT_CARD);
+                $this->user->refresh();
             }
         }
 
@@ -221,8 +225,7 @@ class GiftCardService
         if (isset($rewards['transfer_enable']) && $rewards['transfer_enable'] > 0) {
             $inviteTransfer = intval($rewards['transfer_enable'] * $rate);
             if ($inviteTransfer > 0) {
-                $inviteUser->transfer_enable = ($inviteUser->transfer_enable ?? 0) + $inviteTransfer;
-                $inviteUser->save();
+                app(UserSubscriptionService::class)->addBonusTraffic($inviteUser, $inviteTransfer);
                 $inviteRewards['transfer_enable'] = $inviteTransfer;
             }
         }

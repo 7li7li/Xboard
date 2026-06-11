@@ -5,6 +5,7 @@ namespace App\Observers;
 use App\Jobs\NodeUserSyncJob;
 use App\Models\User;
 use App\Services\TrafficResetService;
+use App\Services\UserSubscriptionService;
 
 class UserObserver
 {
@@ -23,8 +24,8 @@ class UserObserver
     $needsSync = $user->wasChanged($syncFields);
     $oldGroupId = $user->wasChanged('group_id') ? $user->getOriginal('group_id') : null;
 
-    if ($user->wasChanged(['plan_id', 'expired_at'])) {
-      $this->recalculateNextResetAt($user);
+    if ($user->wasChanged(['plan_id', 'group_id', 'speed_limit', 'device_limit', 'expired_at', 'transfer_enable', 'u', 'd'])) {
+      app(UserSubscriptionService::class)->syncPrimarySubscriptionFromUser($user->refresh());
     }
 
     if ($needsSync) {
@@ -34,6 +35,7 @@ class UserObserver
 
   public function created(User $user): void
   {
+    app(UserSubscriptionService::class)->ensureSubscriptionFromLegacyUser($user);
     $this->recalculateNextResetAt($user);
     NodeUserSyncJob::dispatch($user->id, 'created');
   }

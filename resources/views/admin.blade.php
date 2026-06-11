@@ -16,11 +16,13 @@
   </script>
   @php
     $manifestPath = public_path('assets/admin/manifest.json');
+    $multiSubscriptionPath = public_path('admin-multi-subscription.js');
     $manifest = file_exists($manifestPath) ? json_decode(file_get_contents($manifestPath), true) : null;
     $entry = is_array($manifest) ? ($manifest['index.html'] ?? null) : null;
     $scripts = [];
     $styles = [];
     $locales = [];
+    $multiSubscriptionVersion = file_exists($multiSubscriptionPath) ? filemtime($multiSubscriptionPath) : time();
 
     if (is_array($entry)) {
       $visited = [];
@@ -81,6 +83,9 @@
 
 <body>
   <div id="root"></div>
+  @if(file_exists($multiSubscriptionPath))
+    <script defer src="/admin-multi-subscription.js?v={{ $multiSubscriptionVersion }}"></script>
+  @endif
 </body>
 
 </html>

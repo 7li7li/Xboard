@@ -9,9 +9,12 @@ use App\Http\Requests\Admin\UserUpdate;
 use App\Jobs\SendEmailJob;
 use App\Models\Plan;
 use App\Models\User;
+use App\Models\UserSubscription;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
 use App\Services\Plugin\HookManager;
+use App\Services\TrafficResetService;
+use App\Services\UserSubscriptionService;
 use App\Services\UserService;
 use App\Traits\QueryOperators;
 use App\Utils\Helper;
@@ -184,7 +187,7 @@ class UserController extends Controller
         $pageSize = $request->input('pageSize', 10);
 
         $userModel = User::query()
-            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name'])
+            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan'])
             ->select((new User())->getTable() . '.*')
             ->selectRaw('(u + d) as total_used');
 
@@ -206,10 +209,35 @@ class UserController extends Controller
     public static function transformUserData(User $user): array
     {
         $model = $user;
+        $model->loadMissing(['subscriptions.plan']);
         $user = $user->toArray();
         $user['balance'] = $user['balance'] / 100;
         $user['commission_balance'] = $user['commission_balance'] / 100;
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
+        $user['subscriptions'] = $model->subscriptions
+            ->sortByDesc('id')
+            ->map(fn($subscription) => [
+                'id' => $subscription->id,
+                'plan_id' => $subscription->plan_id,
+                'plan' => $subscription->plan,
+                'order_id' => $subscription->order_id,
+                'status' => $subscription->status,
+                'started_at' => $subscription->started_at,
+                'expired_at' => $subscription->expired_at,
+                'transfer_enable' => $subscription->transfer_enable,
+                'u' => $subscription->u,
+                'd' => $subscription->d,
+                'total_used' => $subscription->getTotalUsedTraffic(),
+                'remaining' => $subscription->getRemainingTraffic(),
+                'group_id' => $subscription->group_id,
+                'speed_limit' => $subscription->speed_limit,
+                'device_limit' => $subscription->device_limit,
+                'next_reset_at' => $subscription->next_reset_at,
+                'last_reset_at' => $subscription->last_reset_at,
+                'reset_count' => $subscription->reset_count,
+            ])
+            ->values()
+            ->all();
         return HookManager::filter('admin.user.transform', $user, $model);
     }
 
@@ -220,7 +248,7 @@ class UserController extends Controller
         ], [
             'id.required' => '用户ID不能为空'
         ]);
-        $user = User::find($request->input('id'))->load('invite_user');
+        $user = User::find($request->input('id'))->load(['invite_user', 'subscriptions.plan']);
         $user = HookManager::filter('admin.user.detail', $user, $request);
         return $this->success($user);
     }
@@ -244,6 +272,25 @@ class UserController extends Controller
             $params['password_algo'] = NULL;
         } else {
             unset($params['password']);
+        }
+
+        $subscriptionFields = [
+            'plan_id',
+            'group_id',
+            'transfer_enable',
+            'u',
+            'd',
+            'expired_at',
+            'speed_limit',
+            'device_limit',
+            'next_reset_at',
+            'last_reset_at',
+            'reset_count',
+        ];
+        if ($user->subscriptions()->count() > 1) {
+            foreach ($subscriptionFields as $field) {
+                unset($params[$field]);
+            }
         }
         // 处理订阅计划
         if (isset($params['plan_id'])) {
@@ -293,6 +340,181 @@ class UserController extends Controller
         ]);
 
         return $this->success(true);
+    }
+
+    public function fetchSubscription(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'nullable|integer',
+            'email' => 'nullable|string',
+        ]);
+
+        $query = User::query()
+            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan']);
+
+        if ($request->filled('user_id')) {
+            $query->where('id', (int) $request->input('user_id'));
+        } elseif ($request->filled('email')) {
+            $query->byEmail($request->input('email'));
+        } else {
+            return $this->fail([422, 'user_id or email is required']);
+        }
+
+        $user = $query->first();
+        if (!$user) {
+            return $this->fail([400202, 'User does not exist']);
+        }
+
+        return $this->success(self::transformUserData($user));
+    }
+
+    public function saveSubscription(Request $request)
+    {
+        $params = $request->validate([
+            'user_id' => 'required|integer|exists:v2_user,id',
+            'id' => 'nullable|integer',
+            'plan_id' => 'required|integer|exists:v2_plan,id',
+            'status' => 'nullable|integer|in:1,2,3',
+            'started_at' => 'nullable|integer',
+            'expired_at' => 'nullable|integer',
+            'transfer_enable' => 'nullable|numeric|min:0',
+            'transfer_enable_gb' => 'nullable|numeric|min:0',
+            'u' => 'nullable|numeric|min:0',
+            'u_gb' => 'nullable|numeric|min:0',
+            'd' => 'nullable|numeric|min:0',
+            'd_gb' => 'nullable|numeric|min:0',
+            'group_id' => 'nullable|integer|exists:v2_server_group,id',
+            'speed_limit' => 'nullable|integer|min:0',
+            'device_limit' => 'nullable|integer|min:0',
+            'next_reset_at' => 'nullable|integer',
+            'last_reset_at' => 'nullable|integer',
+            'reset_count' => 'nullable|integer|min:0',
+        ]);
+
+        $user = User::find($params['user_id']);
+        $plan = Plan::find($params['plan_id']);
+        if (!$user || !$plan) {
+            return $this->fail([400202, 'User or plan does not exist']);
+        }
+
+        $subscription = null;
+        if (!empty($params['id'])) {
+            $subscription = UserSubscription::where('id', $params['id'])
+                ->where('user_id', $user->id)
+                ->first();
+            if (!$subscription) {
+                return $this->fail([400202, 'Subscription does not exist']);
+            }
+        }
+
+        $oldActiveGroupIds = app(UserSubscriptionService::class)->getActiveGroupIds($user);
+        $subscriptionService = app(UserSubscriptionService::class);
+        $trafficResetService = app(TrafficResetService::class);
+
+        try {
+            DB::beginTransaction();
+
+            $subscription ??= new UserSubscription();
+
+            $transferEnable = array_key_exists('transfer_enable_gb', $params) && $params['transfer_enable_gb'] !== null
+                ? (int) round(((float) $params['transfer_enable_gb']) * 1073741824)
+                : (int) ($params['transfer_enable'] ?? $subscription->transfer_enable ?? $subscriptionService->planTrafficBytes($plan));
+
+            $upload = array_key_exists('u_gb', $params) && $params['u_gb'] !== null
+                ? (int) round(((float) $params['u_gb']) * 1073741824)
+                : (int) ($params['u'] ?? $subscription->u ?? 0);
+
+            $download = array_key_exists('d_gb', $params) && $params['d_gb'] !== null
+                ? (int) round(((float) $params['d_gb']) * 1073741824)
+                : (int) ($params['d'] ?? $subscription->d ?? 0);
+
+            $subscription->forceFill([
+                'user_id' => $user->id,
+                'plan_id' => $plan->id,
+                'status' => (int) ($params['status'] ?? $subscription->status ?? UserSubscription::STATUS_ACTIVE),
+                'started_at' => $params['started_at'] ?? $subscription->started_at ?? time(),
+                'expired_at' => array_key_exists('expired_at', $params) ? $params['expired_at'] : $subscription->expired_at,
+                'transfer_enable' => $transferEnable,
+                'u' => $upload,
+                'd' => $download,
+                'group_id' => array_key_exists('group_id', $params) ? $params['group_id'] : ($subscription->group_id ?? $plan->group_id),
+                'speed_limit' => array_key_exists('speed_limit', $params) ? $params['speed_limit'] : ($subscription->speed_limit ?? $plan->speed_limit),
+                'device_limit' => array_key_exists('device_limit', $params) ? $params['device_limit'] : ($subscription->device_limit ?? $plan->device_limit),
+                'last_reset_at' => array_key_exists('last_reset_at', $params) ? $params['last_reset_at'] : $subscription->last_reset_at,
+                'reset_count' => (int) ($params['reset_count'] ?? $subscription->reset_count ?? 0),
+            ]);
+            $subscription->setRelation('plan', $plan);
+
+            if (array_key_exists('next_reset_at', $params)) {
+                $subscription->next_reset_at = $params['next_reset_at'];
+            } else {
+                $subscription->next_reset_at = (int) $subscription->status === UserSubscription::STATUS_ACTIVE
+                    ? $trafficResetService->calculateNextResetTimeForSubscription($subscription)?->timestamp
+                    : null;
+            }
+
+            $subscription->save();
+            $user = $subscriptionService->syncUserAggregate($user);
+
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error($e);
+            return $this->fail([500, 'Save failed']);
+        }
+
+        $newActiveGroupIds = $subscriptionService->getActiveGroupIds($user->refresh());
+        foreach (array_diff($oldActiveGroupIds, $newActiveGroupIds) as $groupId) {
+            NodeSyncService::notifyUserRemovedFromGroup($user->id, (int) $groupId);
+        }
+        NodeSyncService::notifyUserChanged($user->refresh());
+
+        return $this->success(self::transformUserData(
+            $user->load(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan'])
+        ));
+    }
+
+    public function dropSubscription(Request $request)
+    {
+        $params = $request->validate([
+            'id' => 'required|integer',
+            'user_id' => 'nullable|integer',
+        ]);
+
+        $query = UserSubscription::query()->where('id', $params['id']);
+        if (!empty($params['user_id'])) {
+            $query->where('user_id', $params['user_id']);
+        }
+
+        $subscription = $query->first();
+        if (!$subscription) {
+            return $this->fail([400202, 'Subscription does not exist']);
+        }
+
+        $user = $subscription->user;
+        $oldActiveGroupIds = app(UserSubscriptionService::class)->getActiveGroupIds($user);
+        $subscriptionService = app(UserSubscriptionService::class);
+
+        try {
+            DB::beginTransaction();
+            $subscription->delete();
+            $user = $subscriptionService->syncUserAggregate($user);
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error($e);
+            return $this->fail([500, 'Delete failed']);
+        }
+
+        $newActiveGroupIds = $subscriptionService->getActiveGroupIds($user->refresh());
+        foreach (array_diff($oldActiveGroupIds, $newActiveGroupIds) as $groupId) {
+            NodeSyncService::notifyUserRemovedFromGroup($user->id, (int) $groupId);
+        }
+        NodeSyncService::notifyUserChanged($user->refresh());
+
+        return $this->success(self::transformUserData(
+            $user->load(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan'])
+        ));
     }
 
     // Export users to CSV.
@@ -415,6 +637,7 @@ class UserController extends Controller
             if (!$user->save()) {
                 return $this->fail([500, '生成失败']);
             }
+            app(UserSubscriptionService::class)->ensureSubscriptionFromLegacyUser($user->refresh());
             return $this->success(true);
         }
 
@@ -446,6 +669,7 @@ class UserController extends Controller
             foreach ($usersData as $userData) {
                 $user = $userService->createUser($userData);
                 $user->save();
+                app(UserSubscriptionService::class)->ensureSubscriptionFromLegacyUser($user->refresh());
                 $users[] = $user;
             }
             DB::commit();
@@ -527,6 +751,7 @@ class UserController extends Controller
             foreach ($usersData as $userData) {
                 $user = $userService->createUser($userData);
                 $user->save();
+                app(UserSubscriptionService::class)->ensureSubscriptionFromLegacyUser($user->refresh());
                 $users[] = $user;
             }
             DB::commit();
@@ -704,6 +929,7 @@ class UserController extends Controller
             $user->codes()->delete();
             $user->stat()->delete();
             $user->tickets()->delete();
+            $user->subscriptions()->delete();
             $user->delete();
             DB::commit();
 

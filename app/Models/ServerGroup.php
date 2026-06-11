@@ -29,6 +29,11 @@ class ServerGroup extends Model
         return $this->hasMany(User::class, 'group_id', 'id');
     }
 
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(UserSubscription::class, 'group_id', 'id');
+    }
+
     public function servers()
     {
         return Server::whereJsonContains('group_ids', (string) $this->id)->get();

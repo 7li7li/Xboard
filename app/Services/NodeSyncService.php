@@ -56,25 +56,33 @@ class NodeSyncService
      */
     public static function notifyUserChanged(User $user): void
     {
-        if (!$user->group_id)
-            return;
+        $subscriptionService = app(UserSubscriptionService::class);
+        $groupIds = $subscriptionService->getActiveGroupIds($user);
 
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)->get();
+        if ($user->group_id) {
+            $groupIds[] = (int) $user->group_id;
+        }
+
+        $groupIds = array_values(array_unique(array_filter($groupIds)));
+        if (empty($groupIds)) {
+            return;
+        }
+
+        $servers = Server::where(function ($query) use ($groupIds) {
+            foreach ($groupIds as $groupId) {
+                $query->orWhereJsonContains('group_ids', (string) $groupId);
+            }
+        })->get();
+
         foreach ($servers as $server) {
             if (!self::isNodeOnline($server->id))
                 continue;
 
-            if ($user->isAvailable()) {
+            $profile = $subscriptionService->getNodeAccessProfile($user, $server);
+            if ($profile) {
                 self::push($server->id, 'sync.user.delta', [
                     'action' => 'add',
-                    'users' => [
-                        [
-                            'id' => $user->id,
-                            'uuid' => $user->uuid,
-                            'speed_limit' => $user->speed_limit,
-                            'device_limit' => $user->device_limit,
-                        ]
-                    ],
+                    'users' => [$profile],
                 ]);
             } else {
                 self::push($server->id, 'sync.user.delta', [

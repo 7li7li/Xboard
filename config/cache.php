@@ -20,6 +20,8 @@ return [
 
     'default' => env('CACHE_DRIVER', 'file'),
 
+    'settings_store' => env('SETTINGS_CACHE_STORE', 'redis'),
+
     /*
     |--------------------------------------------------------------------------
     | Cache Stores

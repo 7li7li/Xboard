@@ -47,19 +47,12 @@ class UserService
 
     public function isAvailable(User $user)
     {
-        if (!$user->banned && $user->transfer_enable && ($user->expired_at > time() || $user->expired_at === NULL)) {
-            return true;
-        }
-        return false;
+        return !$user->banned && app(UserSubscriptionService::class)->hasAvailableSubscriptions($user);
     }
 
     public function getAvailableUsers()
     {
-        return User::whereRaw('u + d < transfer_enable')
-            ->where(function ($query) {
-                $query->where('expired_at', '>=', time())
-                    ->orWhere('expired_at', NULL);
-            })
+        return User::whereHas('subscriptions', fn($query) => $query->available())
             ->where('banned', 0)
             ->get();
     }
@@ -238,18 +231,20 @@ class UserService
      */
     public function assignPlan(User $user, Plan $plan, int $validityDays): User
     {
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->speed_limit = $plan->speed_limit;
-        $user->device_limit = $plan->device_limit;
-
-        if ($validityDays > 0) {
-            $user = $this->extendSubscription($user, $validityDays);
+        if (!$user->exists) {
+            $user->plan_id = $plan->id;
+            $user->group_id = $plan->group_id;
+            $user->transfer_enable = $plan->transfer_enable * 1073741824;
+            $user->speed_limit = $plan->speed_limit;
+            $user->device_limit = $plan->device_limit;
+            if ($validityDays > 0) {
+                $user->expired_at = time() + ($validityDays * 86400);
+            }
+            return $user;
         }
 
-        $user->save();
-        return $user;
+        app(UserSubscriptionService::class)->createSubscriptionForDays($user, $plan, $validityDays);
+        return $user->refresh();
     }
 
     /**
@@ -261,10 +256,7 @@ class UserService
      */
     public function extendSubscription(User $user, int $days): User
     {
-        $currentExpired = $user->expired_at ?? time();
-        $user->expired_at = max($currentExpired, time()) + ($days * 86400);
-
-        return $user;
+        return app(UserSubscriptionService::class)->extendPrimarySubscription($user, $days);
     }
 
     /**

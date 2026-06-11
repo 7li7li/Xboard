@@ -122,7 +122,7 @@ class GiftCardTemplate extends Model
             case self::TYPE_GENERAL:
                 $rewards = $this->rewards ?? [];
                 if (isset($rewards['transfer_enable']) || isset($rewards['expire_days']) || isset($rewards['reset_package'])) {
-                    if (!$user->plan_id) {
+                    if (!$user->activeSubscriptions()->exists()) {
                         return false;
                     }
                 }
@@ -153,8 +153,9 @@ class GiftCardTemplate extends Model
         }
 
         // 检查允许的套餐
-        if (isset($conditions['allowed_plans']) && $user->plan_id) {
-            if (!in_array($user->plan_id, $conditions['allowed_plans'])) {
+        if (isset($conditions['allowed_plans'])) {
+            $allowedPlanIds = (array) $conditions['allowed_plans'];
+            if (!$user->activeSubscriptions()->whereIn('plan_id', $allowedPlanIds)->exists()) {
                 return false;
             }
         }

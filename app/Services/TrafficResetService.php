@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\User;
 use App\Models\Plan;
 use App\Models\TrafficResetLog;
+use App\Models\UserSubscription;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -21,6 +22,23 @@ class TrafficResetService
    */
   public function checkAndReset(User $user, string $triggerSource = TrafficResetLog::SOURCE_AUTO): bool
   {
+    $subscriptions = $user->subscriptions()
+      ->active()
+      ->whereNotNull('next_reset_at')
+      ->where('next_reset_at', '<=', time())
+      ->get();
+
+    if ($subscriptions->isNotEmpty()) {
+      $resetCount = 0;
+      foreach ($subscriptions as $subscription) {
+        if ($this->performResetSubscription($subscription, $triggerSource)) {
+          $resetCount++;
+        }
+      }
+      app(UserSubscriptionService::class)->syncUserAggregate($user);
+      return $resetCount > 0;
+    }
+
     if (!$user->shouldResetTraffic()) {
       return false;
     }
@@ -33,6 +51,18 @@ class TrafficResetService
    */
   public function performReset(User $user, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
   {
+    $subscriptions = $user->subscriptions()->active()->get();
+    if ($subscriptions->isNotEmpty()) {
+      $resetCount = 0;
+      foreach ($subscriptions as $subscription) {
+        if ($this->performResetSubscription($subscription, $triggerSource)) {
+          $resetCount++;
+        }
+      }
+      app(UserSubscriptionService::class)->syncUserAggregate($user);
+      return $resetCount > 0;
+    }
+
     try {
       return DB::transaction(function () use ($user, $triggerSource) {
         $oldUpload = $user->u ?? 0;
@@ -76,22 +106,97 @@ class TrafficResetService
     }
   }
 
+  public function performResetSubscription(UserSubscription $subscription, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
+  {
+    try {
+      return DB::transaction(function () use ($subscription, $triggerSource) {
+        /** @var UserSubscription|null $locked */
+        $locked = UserSubscription::lockForUpdate()->find($subscription->id);
+        if (!$locked || !$locked->isActive()) {
+          return false;
+        }
+
+        $oldUpload = $locked->u ?? 0;
+        $oldDownload = $locked->d ?? 0;
+        $oldTotal = $oldUpload + $oldDownload;
+        $nextResetTime = $this->calculateNextResetTimeForSubscription($locked);
+
+        $locked->update([
+          'u' => 0,
+          'd' => 0,
+          'last_reset_at' => time(),
+          'reset_count' => $locked->reset_count + 1,
+          'next_reset_at' => $nextResetTime ? $nextResetTime->timestamp : null,
+        ]);
+
+        $this->recordResetLog($locked->user, [
+          'reset_type' => $this->getResetTypeFromPlan($locked->plan),
+          'trigger_source' => $triggerSource,
+          'old_upload' => $oldUpload,
+          'old_download' => $oldDownload,
+          'old_total' => $oldTotal,
+          'new_upload' => 0,
+          'new_download' => 0,
+          'new_total' => 0,
+          'metadata' => [
+            'subscription_id' => $locked->id,
+            'plan_id' => $locked->plan_id,
+          ],
+        ]);
+
+        $this->clearUserCache($locked->user);
+        HookManager::call('traffic.subscription.reset.after', $locked);
+        return true;
+      });
+    } catch (\Exception $e) {
+      Log::error(__('traffic_reset.reset_failed'), [
+        'subscription_id' => $subscription->id,
+        'user_id' => $subscription->user_id,
+        'error' => $e->getMessage(),
+        'trigger_source' => $triggerSource,
+      ]);
+
+      return false;
+    }
+  }
+
   /**
    * Calculate the next traffic reset time for a user.
    */
   public function calculateNextResetTime(User $user): ?Carbon
   {
+    $subscriptionResetTimes = $user->subscriptions()
+      ->active()
+      ->with('plan')
+      ->get()
+      ->map(fn(UserSubscription $subscription) => $this->calculateNextResetTimeForSubscription($subscription))
+      ->filter();
+
+    if ($subscriptionResetTimes->isNotEmpty()) {
+      return $subscriptionResetTimes->sortBy('timestamp')->first();
+    }
+
+    return $this->calculateNextResetTimeFromPlan($user->plan, $user->expired_at);
+  }
+
+  public function calculateNextResetTimeForSubscription(UserSubscription $subscription): ?Carbon
+  {
+    return $this->calculateNextResetTimeFromPlan($subscription->plan, $subscription->expired_at);
+  }
+
+  private function calculateNextResetTimeFromPlan(?Plan $plan, ?int $expiredAt): ?Carbon
+  {
     if (
-      !$user->plan
-      || $user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_NEVER
-      || ($user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM
+      !$plan
+      || $plan->reset_traffic_method === Plan::RESET_TRAFFIC_NEVER
+      || ($plan->reset_traffic_method === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM
         && (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY) === Plan::RESET_TRAFFIC_NEVER)
-      || $user->expired_at === NULL
+      || $expiredAt === NULL
     ) {
       return null;
     }
 
-    $resetMethod = $user->plan->reset_traffic_method;
+    $resetMethod = $plan->reset_traffic_method;
 
     if ($resetMethod === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM) {
       $resetMethod = (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY);
@@ -101,9 +206,9 @@ class TrafficResetService
 
     return match ($resetMethod) {
       Plan::RESET_TRAFFIC_FIRST_DAY_MONTH => $this->getNextMonthFirstDay($now),
-      Plan::RESET_TRAFFIC_MONTHLY => $this->getNextMonthlyReset($user, $now),
+      Plan::RESET_TRAFFIC_MONTHLY => $this->getNextMonthlyReset($expiredAt, $now),
       Plan::RESET_TRAFFIC_FIRST_DAY_YEAR => $this->getNextYearFirstDay($now),
-      Plan::RESET_TRAFFIC_YEARLY => $this->getNextYearlyReset($user, $now),
+      Plan::RESET_TRAFFIC_YEARLY => $this->getNextYearlyReset($expiredAt, $now),
       default => null,
     };
   }
@@ -125,9 +230,9 @@ class TrafficResetService
    * 3. Prioritize the reset day in the current month if it has not passed yet.
    * 4. Handle cases where the day does not exist in a month (e.g., 31st in February).
    */
-  private function getNextMonthlyReset(User $user, Carbon $from): Carbon
+  private function getNextMonthlyReset(int $expiredAtTimestamp, Carbon $from): Carbon
   {
-    $expiredAt = Carbon::createFromTimestamp($user->expired_at, config('app.timezone'));
+    $expiredAt = Carbon::createFromTimestamp($expiredAtTimestamp, config('app.timezone'));
     $resetDay = $expiredAt->day;
     $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
     
@@ -166,9 +271,9 @@ class TrafficResetService
    * 3. Prioritize the reset date in the current year if it has not passed yet.
    * 4. Handle the case of February 29th in a leap year.
    */
-  private function getNextYearlyReset(User $user, Carbon $from): Carbon
+  private function getNextYearlyReset(int $expiredAtTimestamp, Carbon $from): Carbon
   {
-    $expiredAt = Carbon::createFromTimestamp($user->expired_at, config('app.timezone'));
+    $expiredAt = Carbon::createFromTimestamp($expiredAtTimestamp, config('app.timezone'));
     $resetMonth = $expiredAt->month;
     $resetDay = $expiredAt->day;
     $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
@@ -266,15 +371,13 @@ class TrafficResetService
 
     try {
       do {
-        $users = User::where('next_reset_at', '<=', time())
-          ->whereNotNull('next_reset_at')
-          ->where('id', '>', $lastProcessedId)
-          ->where(function ($query) {
-            $query->where('expired_at', '>', time())
-              ->orWhereNull('expired_at');
+        $users = User::whereHas('subscriptions', function ($query) {
+            $query->active()
+              ->whereNotNull('next_reset_at')
+              ->where('next_reset_at', '<=', time());
           })
+          ->where('id', '>', $lastProcessedId)
           ->where('banned', 0)
-          ->whereNotNull('plan_id')
           ->orderBy('id')
           ->limit($batchSize)
           ->get();
