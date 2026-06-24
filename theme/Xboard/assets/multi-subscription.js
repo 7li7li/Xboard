@@ -28,6 +28,8 @@
     copied: '\u5df2\u590d\u5236',
     copyFailed: '\u590d\u5236\u5931\u8d25',
     oneClick: '\u4e00\u952e\u8ba2\u9605',
+    exportNodes: '\u5bfc\u51fa\u8282\u70b9',
+    exportAllNodes: '\u5bfc\u51fa\u5168\u90e8\u8282\u70b9',
     renew: '\u7eed\u8d39',
     renewAll: '\u7eed\u8d39\u6240\u6709\u5957\u9910',
     renewAllSubscriptions: '\u7eed\u8d39\u6240\u6709\u5957\u9910\u8ba2\u9605',
@@ -142,6 +144,49 @@
     return data?.subscribe_url
       ? withQuery(data.subscribe_url, { subscription_id: subscription.id })
       : '';
+  }
+
+  function toNodeExportUrl(url) {
+    if (!url) return '';
+
+    try {
+      const parsed = new URL(url, window.location.origin);
+      parsed.pathname = parsed.pathname.replace(/\/$/, '') + '/nodes';
+      return parsed.toString();
+    } catch (error) {
+      const [path, query = ''] = url.split('?');
+      return `${path.replace(/\/$/, '')}/nodes${query ? `?${query}` : ''}`;
+    }
+  }
+
+  function getNodeExportUrl(subscription, data = latestData) {
+    if (subscription?.node_export_url) {
+      return subscription.node_export_url;
+    }
+
+    if (subscription?.id && data?.node_export_url) {
+      return withQuery(data.node_export_url, { subscription_id: subscription.id });
+    }
+
+    if (data?.node_export_url) {
+      return data.node_export_url;
+    }
+
+    if (subscription?.id) {
+      return toNodeExportUrl(getSubscriptionUrl(subscription, data));
+    }
+
+    return toNodeExportUrl(data?.subscribe_url || '');
+  }
+
+  function openNodeExport(subscription = null) {
+    const url = getNodeExportUrl(subscription);
+    if (!url) {
+      showMessage('error', text.copyFailed);
+      return;
+    }
+
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   function escapeHtml(value) {
@@ -280,7 +325,8 @@
         text-decoration: none;
         white-space: nowrap;
       }
-      .xboard-multi-subscriptions__renew-all {
+      .xboard-multi-subscriptions__renew-all,
+      .xboard-multi-subscriptions__export {
         align-items: center;
         border: 1px solid rgba(37, 99, 235, .25);
         border-radius: 6px;
@@ -296,7 +342,8 @@
         padding: .4rem .7rem;
         white-space: nowrap;
       }
-      .xboard-multi-subscriptions__renew-all:disabled {
+      .xboard-multi-subscriptions__renew-all:disabled,
+      .xboard-multi-subscriptions__export:disabled {
         border-color: rgba(148, 163, 184, .22);
         background: rgba(148, 163, 184, .12);
         color: #94a3b8;
@@ -467,6 +514,9 @@
         font-weight: 650;
         justify-content: space-between;
       }
+      .xboard-node-export-shortcut {
+        cursor: pointer;
+      }
       html.dark .xboard-multi-subscriptions,
       .dark .xboard-multi-subscriptions {
         background: #111827;
@@ -485,9 +535,11 @@
       html.dark .xboard-subscription-item__button,
       html.dark .xboard-multi-subscriptions-modal__button,
       html.dark .xboard-multi-subscriptions__renew-all,
+      html.dark .xboard-multi-subscriptions__export,
       .dark .xboard-subscription-item__button,
       .dark .xboard-multi-subscriptions-modal__button,
-      .dark .xboard-multi-subscriptions__renew-all {
+      .dark .xboard-multi-subscriptions__renew-all,
+      .dark .xboard-multi-subscriptions__export {
         border-color: rgba(96, 165, 250, .28);
         background: rgba(96, 165, 250, .12);
         color: #93c5fd;
@@ -813,6 +865,11 @@
         return;
       }
 
+      if (action === 'export-all') {
+        openNodeExport();
+        return;
+      }
+
       const subscriptionId = Number(button.dataset.subscriptionId);
       const subscription = latestData?.subscriptions?.find((item) => Number(item.id) === subscriptionId);
       if (!subscription) return;
@@ -822,6 +879,9 @@
       }
       if (action === 'client') {
         openClientModal(subscription);
+      }
+      if (action === 'export') {
+        openNodeExport(subscription);
       }
       if (action === 'renew') {
         openRenewModal(subscription);
@@ -900,8 +960,125 @@
     return null;
   }
 
+  function findShortcutSection() {
+    const labels = ['\u6377\u5f84', 'Shortcut', 'Shortcuts'];
+    const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,.n-card-header__main,.n-card-header,[class*="title"]'));
+    const labelNode = nodes.find((node) => labels.some((label) => (node.textContent || '').includes(label)));
+    if (!labelNode) return null;
+
+    const card = labelNode.closest('.n-card');
+    if (card) return card;
+
+    const shortcutLabels = [
+      '\u7eed\u8d39\u8ba2\u9605',
+      '\u8d2d\u4e70\u8ba2\u9605',
+      '\u626b\u63cf\u4e8c\u7ef4\u7801\u8ba2\u9605',
+      '\u5b66\u4e60\u5982\u4f55\u4f7f\u7528',
+      'Renewal Subscription',
+      'Purchase Subscription',
+      'Scan QR code to subscribe',
+      'Learn how to use',
+    ];
+
+    let current = labelNode.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 8) {
+      const content = current.textContent || '';
+      const hasShortcutContent = shortcutLabels.some((label) => content.includes(label));
+      const hasShortcutItems = current.querySelectorAll('a,button,[role="button"],.n-grid-item,.n-thing').length > 0;
+      if (hasShortcutContent && hasShortcutItems) {
+        return current;
+      }
+
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return labelNode.parentElement;
+  }
+
+  function createShortcutLike(reference) {
+    const clone = reference.cloneNode(true);
+    clone.classList.add('xboard-node-export-shortcut');
+    clone.dataset.xboardNodeExportShortcut = '1';
+    clone.style.cursor = 'pointer';
+
+    const titleLabels = [
+      '\u7eed\u8d39\u8ba2\u9605',
+      'Renewal Subscription',
+      '\u626b\u63cf\u4e8c\u7ef4\u7801\u8ba2\u9605',
+      'Scan QR code to subscribe',
+      '\u8d2d\u4e70\u8ba2\u9605',
+      'Purchase Subscription',
+      '\u5b66\u4e60\u5982\u4f55\u4f7f\u7528',
+      'Learn how to use',
+    ];
+    const descLabels = [
+      '\u5bf9\u60a8\u5f53\u524d\u7684\u8ba2\u9605\u8fdb\u884c\u7eed\u8d39',
+      'Renew your current subscription',
+      '\u4f7f\u7528\u652f\u6301\u626b\u7801\u7684\u5ba2\u6237\u7aef\u8fdb\u884c\u8ba2\u9605',
+      'Use a client app that supports scanning QR code to subscribe',
+      '\u5bf9\u60a8\u5f53\u524d\u7684\u8ba2\u9605\u8fdb\u884c\u8d2d\u4e70',
+      'Purchase your current subscription',
+      '\u4e0d\u4f1a\u4f7f\u7528\uff0c\u67e5\u770b\u4f7f\u7528\u6559\u7a0b',
+      'I am a newbie, view the tutorial',
+      '\u5feb\u901f\u5c06\u8282\u70b9\u5bfc\u5165\u5bf9\u5e94\u5ba2\u6237\u7aef\u8fdb\u884c\u4f7f\u7528',
+      'Quickly export subscription into the client app',
+    ];
+
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const content = textNode.textContent || '';
+      if (titleLabels.some((label) => content.includes(label))) {
+        textNode.textContent = text.exportNodes;
+        continue;
+      }
+      if (descLabels.some((label) => content.includes(label))) {
+        textNode.textContent = '\u663e\u793a\u53ef\u590d\u5236\u7684\u8282\u70b9\u94fe\u63a5';
+      }
+    }
+
+    clone.querySelectorAll('a').forEach((link) => {
+      link.removeAttribute('href');
+      link.removeAttribute('target');
+    });
+
+    clone.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      openNodeExport();
+    }, true);
+
+    return clone;
+  }
+
+  function ensureLegacyNodeExportShortcut() {
+    if (!latestData?.node_export_url && !latestData?.subscribe_url) return;
+    if (document.querySelector('[data-xboard-node-export-shortcut="1"]')) return;
+
+    const section = findShortcutSection();
+    if (!section) return;
+
+    const candidates = Array.from(section.querySelectorAll('a,button,[role="button"],.n-grid-item,.n-thing'))
+      .map((node) => node.closest('.n-grid-item') || node)
+      .filter((node, index, list) => list.indexOf(node) === index)
+      .filter((node) => {
+        if (node.closest(`#${cardId}`) || node.closest(`#${modalId}`)) return false;
+        const content = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        return content && content.length < 240;
+      });
+    const shortcutPattern = /\u8ba2\u9605|Subscription|\u6559\u7a0b|Tutorial|\u8d2d\u4e70|Purchase|\u7eed\u8d39|Renewal/;
+    const reference = candidates.find((node) => shortcutPattern.test(node.textContent || ''));
+    if (!reference || !reference.parentElement) return;
+
+    reference.parentElement.appendChild(createShortcutLike(reference));
+  }
+
   function hideLegacyShortcuts() {
     restoreLegacyShortcuts();
+    ensureLegacyNodeExportShortcut();
 
     const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],.n-grid-item,.n-thing,[class*="shortcut"],[class*="Shortcut"]'));
     nodes.forEach((node) => {
@@ -987,6 +1164,7 @@
           <div class="xboard-subscription-item__actions">
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="copy" data-subscription-id="${escapeHtml(subscription.id)}">${text.copyLink}</button>
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="client" data-subscription-id="${escapeHtml(subscription.id)}">${text.oneClick}</button>
+            <button class="xboard-subscription-item__button" type="button" data-xboard-action="export" data-subscription-id="${escapeHtml(subscription.id)}">${text.exportNodes}</button>
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="renew" data-subscription-id="${escapeHtml(subscription.id)}"${renewDisabled}>${text.renew}</button>
           </div>
         </article>
@@ -1000,6 +1178,7 @@
       <div class="xboard-multi-subscriptions__header">
         <h3 class="xboard-multi-subscriptions__title">${text.listTitle}</h3>
         <div class="xboard-multi-subscriptions__actions">
+          <button class="xboard-multi-subscriptions__export" type="button" data-xboard-action="export-all">${text.exportAllNodes}</button>
           <button class="xboard-multi-subscriptions__renew-all" type="button" data-xboard-action="renew-all"${renewAllDisabled}>${text.renewAll}</button>
           <a class="xboard-multi-subscriptions__add" href="/#/plan">${text.buyNew}</a>
         </div>

@@ -145,6 +145,29 @@ class Helper
         return HookManager::filter('subscribe.url', $finalUrl);
     }
 
+    public static function getNodeExportUrl(string $token, $subscribeUrl = null, array $query = [])
+    {
+        $path = route('client.nodes', ['token' => $token], false);
+        if (!empty($query)) {
+            $path .= '?' . http_build_query($query);
+        }
+
+        if ($subscribeUrl) {
+            return HookManager::filter('node.export.url', rtrim($subscribeUrl, '/') . $path);
+        }
+
+        $urlString = (string) admin_setting('subscribe_url', '');
+        $subscribeUrlList = $urlString ? explode(',', $urlString) : [];
+
+        if (empty($subscribeUrlList)) {
+            return HookManager::filter('node.export.url', url($path));
+        }
+
+        $selectedUrl = self::replaceByPattern(Arr::random($subscribeUrlList));
+
+        return HookManager::filter('node.export.url', rtrim($selectedUrl, '/') . $path);
+    }
+
     public static function randomPort($range): int {
         $portRange = explode('-', (string) $range, 2);
         $min = (int) ($portRange[0] ?? 0);

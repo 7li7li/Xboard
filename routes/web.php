@@ -87,6 +87,10 @@ Route::get('/' . admin_setting('secure_path', admin_setting('frontend_admin_path
     ]);
 });
 
+Route::get('/' . (admin_setting('subscribe_path', 's')) . '/{token}/nodes', [\App\Http\Controllers\V1\Client\ClientController::class, 'nodes'])
+    ->middleware('client')
+    ->name('client.nodes');
+
 Route::get('/' . (admin_setting('subscribe_path', 's')) . '/{token}', [\App\Http\Controllers\V1\Client\ClientController::class, 'subscribe'])
     ->middleware('client')
     ->name('client.subscribe');

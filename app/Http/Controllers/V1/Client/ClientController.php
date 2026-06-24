@@ -43,45 +43,17 @@ class ClientController extends Controller
             'subscription_id' => ['nullable', 'integer', 'min:1'],
         ]);
 
-        $user = $request->user();
-        $userService = new UserService();
-
-        if ($request->filled('subscription_id')) {
-            $subscription = UserSubscription::with('plan')
-                ->where('id', $request->integer('subscription_id'))
-                ->where('user_id', $user->id)
-                ->available()
-                ->first();
-
-            if (!$subscription || $user->banned) {
-                HookManager::call('client.subscribe.unavailable');
-                return response('', 403, ['Content-Type' => 'text/plain']);
-            }
-
-            $groupId = $this->resolveSubscriptionGroupId($subscription);
-            if (!$groupId) {
-                HookManager::call('client.subscribe.unavailable');
-                return response('', 403, ['Content-Type' => 'text/plain']);
-            }
-
-            $scopedUser = $this->makeSubscriptionScopedUser($user, $subscription);
-            $servers = ServerService::getAvailableServersForGroups($scopedUser, [$groupId]);
-            $servers = HookManager::filter('client.subscribe.servers', $servers, $scopedUser, $request);
-
-            return $this->doSubscribe(
-                $request,
-                $scopedUser,
-                $servers,
-                $this->getSubscriptionResetDay($subscription)
-            );
-        }
-
-        if (!$userService->isAvailable($user)) {
-            HookManager::call('client.subscribe.unavailable');
+        $context = $this->resolveSubscribeContext($request);
+        if (!$context) {
             return response('', 403, ['Content-Type' => 'text/plain']);
         }
 
-        return $this->doSubscribe($request, $user);
+        return $this->doSubscribe(
+            $request,
+            $context['user'],
+            $context['servers'],
+            $context['reset_day']
+        );
     }
 
     public function doSubscribe(Request $request, $user, $servers = null, ?int $resetDay = null)
@@ -118,6 +90,119 @@ class ClientController extends Controller
         ]);
 
         return $protocolInstance->handle();
+    }
+
+    public function nodes(Request $request)
+    {
+        $request->validate([
+            'types' => ['nullable', 'string'],
+            'filter' => ['nullable', 'string'],
+            'subscription_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $context = $this->resolveSubscribeContext($request);
+        if (!$context) {
+            abort(403);
+        }
+
+        $requestedTypes = $this->parseRequestedTypes($request->input('types'));
+        $filterKeywords = $this->parseFilterKeywords($request->input('filter'));
+        $serversFiltered = $this->filterServers(
+            servers: $context['servers'],
+            allowedTypes: $requestedTypes,
+            filterKeywords: $filterKeywords
+        );
+        $serversFiltered = $this->addPrefixToServerName($serversFiltered);
+
+        $nodes = $this->buildNodeLinks($context['user'], $serversFiltered);
+
+        return response()
+            ->view('client.nodes', [
+                'app_name' => admin_setting('app_name', 'XBoard'),
+                'subscription_name' => $context['subscription']?->plan?->name,
+                'subscription_id' => $context['subscription']?->id,
+                'nodes' => $nodes,
+                'node_count' => count($nodes),
+            ])
+            ->header('Content-Type', 'text/html; charset=UTF-8');
+    }
+
+    private function resolveSubscribeContext(Request $request): ?array
+    {
+        $user = $request->user();
+        $userService = new UserService();
+
+        if ($request->filled('subscription_id')) {
+            $subscription = UserSubscription::with('plan')
+                ->where('id', $request->integer('subscription_id'))
+                ->where('user_id', $user->id)
+                ->available()
+                ->first();
+
+            if (!$subscription || $user->banned) {
+                HookManager::call('client.subscribe.unavailable');
+                return null;
+            }
+
+            $groupId = $this->resolveSubscriptionGroupId($subscription);
+            if (!$groupId) {
+                HookManager::call('client.subscribe.unavailable');
+                return null;
+            }
+
+            $scopedUser = $this->makeSubscriptionScopedUser($user, $subscription);
+            $servers = ServerService::getAvailableServersForGroups($scopedUser, [$groupId]);
+            $servers = HookManager::filter('client.subscribe.servers', $servers, $scopedUser, $request);
+
+            return [
+                'user' => $scopedUser,
+                'servers' => $servers,
+                'reset_day' => $this->getSubscriptionResetDay($subscription),
+                'subscription' => $subscription,
+            ];
+        }
+
+        if (!$userService->isAvailable($user)) {
+            HookManager::call('client.subscribe.unavailable');
+            return null;
+        }
+
+        $servers = ServerService::getAvailableServers($user);
+        $servers = HookManager::filter('client.subscribe.servers', $servers, $user, $request);
+
+        return [
+            'user' => $user,
+            'servers' => $servers,
+            'reset_day' => null,
+            'subscription' => null,
+        ];
+    }
+
+    private function buildNodeLinks(User $user, array $servers): array
+    {
+        return collect($servers)
+            ->map(fn(array $server) => $this->buildNodeLink($user, $server))
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    private function buildNodeLink(User $user, array $server): string
+    {
+        $password = data_get($server, 'password', $user->uuid);
+
+        return match ($server['type'] ?? null) {
+            Server::TYPE_VMESS => General::buildVmess($password, $server),
+            Server::TYPE_VLESS => General::buildVless($password, $server),
+            Server::TYPE_SHADOWSOCKS => General::buildShadowsocks($password, $server),
+            Server::TYPE_TROJAN => General::buildTrojan($password, $server),
+            Server::TYPE_HYSTERIA => General::buildHysteria($password, $server),
+            Server::TYPE_ANYTLS => General::buildAnyTLS($password, $server),
+            Server::TYPE_SOCKS => General::buildSocks($password, $server),
+            Server::TYPE_TUIC => General::buildTuic($password, $server),
+            Server::TYPE_HTTP => General::buildHttp($password, $server),
+            default => '',
+        };
     }
 
     /**
@@ -260,7 +345,7 @@ class ClientController extends Controller
 
     private function resolveSubscriptionGroupId(UserSubscription $subscription): ?int
     {
-        $groupId = $subscription->group_id ?: $subscription->plan?->group_id;
+        $groupId = $subscription->group_id ?: data_get($subscription, 'plan.group_id');
         return $groupId ? (int) $groupId : null;
     }
 

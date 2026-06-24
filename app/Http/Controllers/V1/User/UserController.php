@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Ticket;
 use App\Models\User;
+use App\Models\UserSubscription;
 use App\Services\Auth\LoginService;
 use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
@@ -165,6 +166,7 @@ class UserController extends Controller
             }
         }
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
+        $user['node_export_url'] = Helper::getNodeExportUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
         $user['subscriptions'] = $this->formatSubscriptions($user);
@@ -177,6 +179,7 @@ class UserController extends Controller
         return $user->subscriptions
             ->sortByDesc('id')
             ->map(function ($subscription) use ($user) {
+                /** @var UserSubscription $subscription */
                 $payload = [
                     'id' => $subscription->id,
                     'plan_id' => $subscription->plan_id,
@@ -199,6 +202,9 @@ class UserController extends Controller
 
                 if (!empty($user->token)) {
                     $payload['subscribe_url'] = Helper::getSubscribeUrl($user->token, null, [
+                        'subscription_id' => $subscription->id,
+                    ]);
+                    $payload['node_export_url'] = Helper::getNodeExportUrl($user->token, null, [
                         'subscription_id' => $subscription->id,
                     ]);
                 }
