@@ -115,6 +115,7 @@ class ClientController extends Controller
         $serversFiltered = $this->addPrefixToServerName($serversFiltered);
 
         $nodes = $this->buildNodeLinks($context['user'], $serversFiltered);
+        $decodedNodes = $this->buildDecodedNodeLinks($nodes);
 
         return response()
             ->view('client.nodes', [
@@ -122,6 +123,7 @@ class ClientController extends Controller
                 'subscription_name' => $context['subscription']?->plan?->name,
                 'subscription_id' => $context['subscription']?->id,
                 'nodes' => $nodes,
+                'decoded_nodes' => $decodedNodes,
                 'node_count' => count($nodes),
             ])
             ->header('Content-Type', 'text/html; charset=UTF-8');
@@ -185,6 +187,224 @@ class ClientController extends Controller
             ->filter()
             ->values()
             ->all();
+    }
+
+    private function buildDecodedNodeLinks(array $nodes): array
+    {
+        return collect($nodes)
+            ->map(fn(string $node) => $this->decodeNodeLink($node))
+            ->values()
+            ->all();
+    }
+
+    private function decodeNodeLink(string $node): string
+    {
+        $node = trim($node);
+        if ($node === '') {
+            return '';
+        }
+
+        $scheme = strtolower((string) parse_url($node, PHP_URL_SCHEME));
+
+        return match ($scheme) {
+            'vmess' => $this->decodeVmessNode($node),
+            'ss' => $this->decodeBase64UserInfoNode($node, 'ss', 'SS Base64'),
+            'socks' => $this->decodeBase64UserInfoNode($node, 'socks', 'SOCKS Base64'),
+            'http' => $this->decodeBase64UserInfoNode($node, 'http', 'HTTP Base64'),
+            default => $this->formatUrlNode($node, '该协议链接本身没有 Base64 包裹，以下为 URL 参数解析。'),
+        };
+    }
+
+    private function decodeVmessNode(string $node): string
+    {
+        $payload = preg_replace('/^vmess:\/\//i', '', trim($node));
+        $decoded = $this->decodeBase64Payload($payload);
+
+        if ($decoded === null) {
+            return "协议: vmess\nBase64解析: 解析失败";
+        }
+
+        $json = json_decode($decoded, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            $decoded = json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+
+        return "协议: vmess\nBase64解析:\n{$decoded}";
+    }
+
+    private function decodeBase64UserInfoNode(string $node, string $protocol, string $label): string
+    {
+        $parts = $this->parseNodeUrl($node);
+        $encoded = $parts['userinfo'] ?? '';
+        $decoded = $this->decodeBase64Payload($encoded);
+
+        if ($decoded === null && $encoded === '' && !empty($parts['authority'])) {
+            $decoded = $this->decodeBase64Payload($parts['authority']);
+        }
+
+        $lines = ["协议: {$protocol}"];
+        if (!empty($parts['name'])) {
+            $lines[] = "名称: {$parts['name']}";
+        }
+
+        if ($decoded === null) {
+            $lines[] = "{$label}解析: 解析失败";
+        } elseif ($protocol === 'ss') {
+            $parts = explode(':', $decoded, 2);
+            if (count($parts) === 2) {
+                $lines[] = "加密方式：{$parts[0]}";
+                $lines[] = "密钥：{$parts[1]}";
+            } else {
+                $lines[] = "{$label}解析: {$decoded}";
+            }
+        } else {
+            $lines[] = "{$label}解析: {$decoded}";
+        }
+
+        if (!empty($parts['host'])) {
+            $lines[] = "地址: {$parts['host']}";
+        }
+        if (!empty($parts['port'])) {
+            $lines[] = "端口: {$parts['port']}";
+        }
+        if (!empty($parts['query'])) {
+            $lines[] = '参数:';
+            foreach ($parts['query'] as $key => $value) {
+                $displayKey = $this->displayQueryKey($protocol, (string) $key);
+                $lines[] = "  {$displayKey}: " . $this->stringifyQueryValue($value);
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    private function formatUrlNode(string $node, string $note): string
+    {
+        $parts = $this->parseNodeUrl($node);
+        $protocol = $parts['scheme'] ?: 'unknown';
+        $userInfoLabel = $protocol === 'vless' ? '密钥' : '用户信息';
+        $lines = [
+            "协议: {$protocol}",
+            "说明: {$note}",
+        ];
+
+        if (!empty($parts['name'])) {
+            $lines[] = "名称: {$parts['name']}";
+        }
+        if (!empty($parts['userinfo'])) {
+            $lines[] = "{$userInfoLabel}: {$parts['userinfo']}";
+        }
+        if (!empty($parts['host'])) {
+            $lines[] = "地址: {$parts['host']}";
+        }
+        if (!empty($parts['port'])) {
+            $lines[] = "端口: {$parts['port']}";
+        }
+        if (!empty($parts['query'])) {
+            $lines[] = '参数:';
+            foreach ($parts['query'] as $key => $value) {
+                $displayKey = $this->displayQueryKey($protocol, (string) $key);
+                $lines[] = "  {$displayKey}: " . $this->stringifyQueryValue($value);
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    private function parseNodeUrl(string $node): array
+    {
+        $node = trim($node);
+        $scheme = strtolower((string) parse_url($node, PHP_URL_SCHEME));
+        $fragment = parse_url($node, PHP_URL_FRAGMENT);
+        $queryString = (string) parse_url($node, PHP_URL_QUERY);
+        $query = [];
+
+        if ($queryString !== '') {
+            parse_str($queryString, $query);
+        }
+
+        $withoutScheme = preg_replace('/^[a-z][a-z0-9+.-]*:\/\//i', '', $node) ?? $node;
+        $authority = preg_split('/[?#]/', $withoutScheme, 2)[0] ?? '';
+        $userinfo = null;
+        $hostPort = $authority;
+
+        if (($atPosition = strrpos($authority, '@')) !== false) {
+            $userinfo = substr($authority, 0, $atPosition);
+            $hostPort = substr($authority, $atPosition + 1);
+        }
+
+        $hostPort = rtrim($hostPort, '/');
+        [$host, $port] = $this->splitHostPort($hostPort);
+
+        return [
+            'scheme' => $scheme,
+            'authority' => rawurldecode($authority),
+            'userinfo' => $userinfo !== null ? rawurldecode($userinfo) : null,
+            'host' => $host,
+            'port' => $port,
+            'query' => $query,
+            'name' => is_string($fragment) ? rawurldecode($fragment) : null,
+        ];
+    }
+
+    private function splitHostPort(string $hostPort): array
+    {
+        if ($hostPort === '') {
+            return [null, null];
+        }
+
+        if (str_starts_with($hostPort, '[') && preg_match('/^\[(?<host>.+)]:(?<port>\d+)$/', $hostPort, $matches)) {
+            return [$matches['host'], $matches['port']];
+        }
+
+        if (preg_match('/^(?<host>.+):(?<port>\d+)$/', $hostPort, $matches)) {
+            return [$matches['host'], $matches['port']];
+        }
+
+        return [$hostPort, null];
+    }
+
+    private function decodeBase64Payload(?string $payload): ?string
+    {
+        $payload = trim((string) $payload);
+        if ($payload === '') {
+            return null;
+        }
+
+        $normalized = strtr($payload, '-_', '+/');
+        $remainder = strlen($normalized) % 4;
+        if ($remainder > 0) {
+            $normalized .= str_repeat('=', 4 - $remainder);
+        }
+
+        $decoded = base64_decode($normalized, true);
+        if ($decoded === false || !mb_check_encoding($decoded, 'UTF-8')) {
+            return null;
+        }
+
+        return $decoded;
+    }
+
+    private function displayQueryKey(string $protocol, string $key): string
+    {
+        if ($protocol === 'vless' && $key === 'pbk') {
+            return 'publicKey';
+        }
+
+        return $key;
+    }
+
+    private function stringifyQueryValue(mixed $value): string
+    {
+        if (is_array($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        return (string) $value;
     }
 
     private function buildNodeLink(User $user, array $server): string

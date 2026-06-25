@@ -79,9 +79,25 @@
       white-space: nowrap;
     }
 
+    .button.is-active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #ffffff;
+    }
+
+    .view-toggle {
+      display: inline-flex;
+      gap: .35rem;
+      margin-right: .25rem;
+    }
+
     .nodes {
       display: grid;
       gap: .75rem;
+    }
+
+    .nodes[hidden] {
+      display: none;
     }
 
     .node {
@@ -171,6 +187,10 @@
 
       @if ($node_count > 0)
         <div class="actions">
+          <div class="view-toggle" role="tablist" aria-label="{{ __('Display Mode') }}">
+            <button class="button is-active" type="button" data-node-mode="raw">{{ __('Raw Links') }}</button>
+            <button class="button" type="button" data-node-mode="decoded">{{ __('Base64 Parsed') }}</button>
+          </div>
           <button class="button" type="button" id="copyAll">{{ __('Copy All') }}</button>
           <button class="button" type="button" id="downloadTxt">{{ __('Download') }}</button>
         </div>
@@ -178,14 +198,26 @@
     </div>
 
     @if ($node_count > 0)
-      <div class="nodes">
+      <div class="nodes" data-node-view="raw">
         @foreach ($nodes as $index => $node)
           <article class="node">
             <div class="node__header">
-              <span>#{{ $index + 1 }}</span>
-              <button class="button" type="button" data-copy-node="{{ $index }}">{{ __('Copy') }}</button>
+              <span>#{{ $index + 1 }} / {{ __('Raw Link') }}</span>
+              <button class="button" type="button" data-copy-node="{{ $index }}" data-copy-mode="raw">{{ __('Copy') }}</button>
             </div>
             <pre class="node__code" id="node-{{ $index }}">{{ trim($node) }}</pre>
+          </article>
+        @endforeach
+      </div>
+
+      <div class="nodes" data-node-view="decoded" hidden>
+        @foreach ($decoded_nodes as $index => $decodedNode)
+          <article class="node">
+            <div class="node__header">
+              <span>#{{ $index + 1 }} / {{ __('Base64 Parsed') }}</span>
+              <button class="button" type="button" data-copy-node="{{ $index }}" data-copy-mode="decoded">{{ __('Copy') }}</button>
+            </div>
+            <pre class="node__code" id="decoded-node-{{ $index }}">{{ trim($decodedNode) }}</pre>
           </article>
         @endforeach
       </div>
@@ -196,7 +228,13 @@
 
   <script>
     const nodes = @json(array_map('trim', $nodes), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    const decodedNodes = @json(array_map('trim', $decoded_nodes), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     const copiedText = @json(__('Copied'));
+    let activeMode = 'raw';
+
+    function currentNodeList() {
+      return activeMode === 'decoded' ? decodedNodes : nodes;
+    }
 
     async function copyText(value, button) {
       if (!value) return;
@@ -224,22 +262,37 @@
       }, 1000);
     }
 
+    document.querySelectorAll('[data-node-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        activeMode = button.dataset.nodeMode === 'decoded' ? 'decoded' : 'raw';
+
+        document.querySelectorAll('[data-node-mode]').forEach((item) => {
+          item.classList.toggle('is-active', item.dataset.nodeMode === activeMode);
+        });
+
+        document.querySelectorAll('[data-node-view]').forEach((view) => {
+          view.hidden = view.dataset.nodeView !== activeMode;
+        });
+      });
+    });
+
     document.getElementById('copyAll')?.addEventListener('click', (event) => {
-      copyText(nodes.join('\n'), event.currentTarget);
+      copyText(currentNodeList().join('\n'), event.currentTarget);
     });
 
     document.getElementById('downloadTxt')?.addEventListener('click', () => {
-      const blob = new Blob([nodes.join('\n')], { type: 'text/plain;charset=utf-8' });
+      const blob = new Blob([currentNodeList().join('\n')], { type: 'text/plain;charset=utf-8' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = 'nodes.txt';
+      link.download = activeMode === 'decoded' ? 'nodes-decoded.txt' : 'nodes.txt';
       link.click();
       URL.revokeObjectURL(link.href);
     });
 
     document.querySelectorAll('[data-copy-node]').forEach((button) => {
       button.addEventListener('click', () => {
-        copyText(nodes[Number(button.dataset.copyNode)] || '', button);
+        const list = button.dataset.copyMode === 'decoded' ? decodedNodes : nodes;
+        copyText(list[Number(button.dataset.copyNode)] || '', button);
       });
     });
   </script>
