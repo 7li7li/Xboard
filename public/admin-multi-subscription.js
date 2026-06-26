@@ -45,6 +45,7 @@
   let plans = [];
   let groups = [];
   let loading = false;
+  let enhanceTimer = null;
 
   function isUserManagePage() {
     return /\/user\/manage(?:$|[?#/])/.test(window.location.pathname + window.location.search + window.location.hash);
@@ -764,6 +765,7 @@
   function enhanceRows() {
     if (!isUserManagePage()) return;
     document.querySelectorAll('tbody tr').forEach((row) => {
+      if (row.getAttribute(enhancedAttr) === '1' && row.querySelector('.xboard-ms-entry')) return;
       const match = (row.textContent || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
       if (!match) return;
       const email = match[0];
@@ -798,11 +800,12 @@
   }
 
   function scheduleEnhance() {
-    window.setTimeout(() => {
+    if (enhanceTimer) return;
+    enhanceTimer = window.setTimeout(() => {
+      enhanceTimer = null;
       floatingButton();
       enhanceRows();
     }, 200);
-    window.setTimeout(enhanceRows, 900);
   }
 
   attachRootEvents();
@@ -816,8 +819,5 @@
   };
   window.addEventListener('popstate', scheduleEnhance);
 
-  new MutationObserver(() => {
-    floatingButton();
-    enhanceRows();
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(scheduleEnhance).observe(document.documentElement, { childList: true, subtree: true });
 })();

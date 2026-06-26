@@ -183,11 +183,11 @@ class UserController extends Controller
     // Fetch paginated user list (filters + sorting).
     public function fetch(Request $request)
     {
-        $current = $request->input('current', 1);
-        $pageSize = $request->input('pageSize', 10);
+        $current = max(1, (int) $request->input('current', 1));
+        $pageSize = min(100, max(1, (int) $request->input('pageSize', 10)));
 
         $userModel = User::query()
-            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan'])
+            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name'])
             ->select((new User())->getTable() . '.*')
             ->selectRaw('(u + d) as total_used');
 
@@ -199,45 +199,51 @@ class UserController extends Controller
             ->paginate($pageSize, ['*'], 'page', $current);
 
         $users->getCollection()->transform(function ($user): array {
-            return self::transformUserData($user);
+            return self::transformUserData($user, false);
         });
 
         return $this->paginate($users);
     }
 
     // Transform user fields for API response.
-    public static function transformUserData(User $user): array
+    public static function transformUserData(User $user, bool $includeSubscriptions = true): array
     {
         $model = $user;
-        $model->loadMissing(['subscriptions.plan']);
+        if ($includeSubscriptions) {
+            $model->loadMissing(['subscriptions.plan']);
+        }
         $user = $user->toArray();
         $user['balance'] = $user['balance'] / 100;
         $user['commission_balance'] = $user['commission_balance'] / 100;
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
-        $user['subscriptions'] = $model->subscriptions
-            ->sortByDesc('id')
-            ->map(fn($subscription) => [
-                'id' => $subscription->id,
-                'plan_id' => $subscription->plan_id,
-                'plan' => $subscription->plan,
-                'order_id' => $subscription->order_id,
-                'status' => $subscription->status,
-                'started_at' => $subscription->started_at,
-                'expired_at' => $subscription->expired_at,
-                'transfer_enable' => $subscription->transfer_enable,
-                'u' => $subscription->u,
-                'd' => $subscription->d,
-                'total_used' => $subscription->getTotalUsedTraffic(),
-                'remaining' => $subscription->getRemainingTraffic(),
-                'group_id' => $subscription->group_id,
-                'speed_limit' => $subscription->speed_limit,
-                'device_limit' => $subscription->device_limit,
-                'next_reset_at' => $subscription->next_reset_at,
-                'last_reset_at' => $subscription->last_reset_at,
-                'reset_count' => $subscription->reset_count,
-            ])
-            ->values()
-            ->all();
+        if ($includeSubscriptions) {
+            $user['subscriptions'] = $model->subscriptions
+                ->sortByDesc('id')
+                ->map(fn($subscription) => [
+                    'id' => $subscription->id,
+                    'plan_id' => $subscription->plan_id,
+                    'plan' => $subscription->plan,
+                    'order_id' => $subscription->order_id,
+                    'status' => $subscription->status,
+                    'started_at' => $subscription->started_at,
+                    'expired_at' => $subscription->expired_at,
+                    'transfer_enable' => $subscription->transfer_enable,
+                    'u' => $subscription->u,
+                    'd' => $subscription->d,
+                    'total_used' => $subscription->getTotalUsedTraffic(),
+                    'remaining' => $subscription->getRemainingTraffic(),
+                    'group_id' => $subscription->group_id,
+                    'speed_limit' => $subscription->speed_limit,
+                    'device_limit' => $subscription->device_limit,
+                    'next_reset_at' => $subscription->next_reset_at,
+                    'last_reset_at' => $subscription->last_reset_at,
+                    'reset_count' => $subscription->reset_count,
+                ])
+                ->values()
+                ->all();
+        } else {
+            unset($user['subscriptions']);
+        }
         return HookManager::filter('admin.user.transform', $user, $model);
     }
 

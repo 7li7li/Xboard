@@ -23,6 +23,10 @@
     $styles = [];
     $locales = [];
     $multiSubscriptionVersion = file_exists($multiSubscriptionPath) ? filemtime($multiSubscriptionPath) : time();
+    $assetVersion = function ($asset) {
+      $path = public_path('assets/admin/' . ltrim($asset, '/'));
+      return file_exists($path) ? filemtime($path) : time();
+    };
 
     if (is_array($entry)) {
       $visited = [];
@@ -62,22 +66,22 @@
 
   @if($entry && count($scripts) > 0)
     @foreach($styles as $css)
-      <link rel="stylesheet" crossorigin href="/assets/admin/{{ $css }}" />
+      <link rel="stylesheet" crossorigin href="/assets/admin/{{ $css }}?v={{ $assetVersion($css) }}" />
     @endforeach
     @foreach($locales as $locale)
-      <script src="/assets/admin/{{ $locale }}"></script>
+      <script src="/assets/admin/{{ $locale }}?v={{ $assetVersion($locale) }}"></script>
     @endforeach
     @foreach($scripts as $js)
-      <script type="module" crossorigin src="/assets/admin/{{ $js }}"></script>
+      <script type="module" crossorigin src="/assets/admin/{{ $js }}?v={{ $assetVersion($js) }}"></script>
     @endforeach
   @else
     {{-- Fallback: hardcoded paths for backward compatibility --}}
-    <script type="module" crossorigin src="/assets/admin/assets/index.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/admin/assets/index.css" />
-    <link rel="stylesheet" crossorigin href="/assets/admin/assets/vendor.css">
-    <script src="/assets/admin/locales/en-US.js"></script>
-    <script src="/assets/admin/locales/zh-CN.js"></script>
-    <script src="/assets/admin/locales/ko-KR.js"></script>
+    <script type="module" crossorigin src="/assets/admin/assets/index.js?v={{ $assetVersion('assets/index.js') }}"></script>
+    <link rel="stylesheet" crossorigin href="/assets/admin/assets/index.css?v={{ $assetVersion('assets/index.css') }}" />
+    <link rel="stylesheet" crossorigin href="/assets/admin/assets/vendor.css?v={{ $assetVersion('assets/vendor.css') }}">
+    <script src="/assets/admin/locales/en-US.js?v={{ $assetVersion('locales/en-US.js') }}"></script>
+    <script src="/assets/admin/locales/zh-CN.js?v={{ $assetVersion('locales/zh-CN.js') }}"></script>
+    <script src="/assets/admin/locales/ko-KR.js?v={{ $assetVersion('locales/ko-KR.js') }}"></script>
   @endif
 </head>
 
