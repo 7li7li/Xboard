@@ -411,7 +411,7 @@ class UserSubscriptionService
         $this->consumeTraffic($user, $server->group_ids ?? [], (float) $server->getCurrentRate(), $upload, $download);
     }
 
-    public function consumeTraffic(User $user, array $groupIds, float $rate, int $upload, int $download): void
+    public function consumeTraffic(User $user, mixed $groupIds, float $rate, int $upload, int $download): void
     {
         $upload = (int) floor($upload * $rate);
         $download = (int) floor($download * $rate);
@@ -421,7 +421,7 @@ class UserSubscriptionService
             return;
         }
 
-        $groupIds = array_map('intval', $groupIds);
+        $groupIds = $this->normalizeGroupIds($groupIds);
         if (empty($groupIds)) {
             return;
         }
@@ -545,7 +545,7 @@ class UserSubscriptionService
     public function getNodeSubscriptions(User|int $user, Server $server, bool $availableOnly = true): EloquentCollection
     {
         $userId = $user instanceof User ? $user->id : $user;
-        $groupIds = array_map('intval', $server->group_ids ?? []);
+        $groupIds = $this->normalizeGroupIds($server->group_ids ?? []);
 
         if (empty($groupIds)) {
             return new EloquentCollection();
@@ -586,7 +586,7 @@ class UserSubscriptionService
 
     public function getAvailableNodeUsers(Server $server): Collection
     {
-        $groupIds = array_map('intval', $server->group_ids ?? []);
+        $groupIds = $this->normalizeGroupIds($server->group_ids ?? []);
         if (empty($groupIds)) {
             return collect();
         }
@@ -679,6 +679,48 @@ class UserSubscriptionService
 
         $sum = $values->filter()->sum();
         return $sum > 0 ? (int) $sum : null;
+    }
+
+    private function normalizeGroupIds(mixed $groupIds): array
+    {
+        $normalized = [];
+        $this->collectGroupIds($groupIds, $normalized);
+
+        return array_values(array_unique(array_filter(
+            array_map('intval', $normalized),
+            fn(int $groupId): bool => $groupId > 0
+        )));
+    }
+
+    private function collectGroupIds(mixed $value, array &$groupIds): void
+    {
+        if ($value === null || $value === '') {
+            return;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $this->collectGroupIds($decoded, $groupIds);
+                return;
+            }
+
+            foreach (preg_split('/[,\s]+/', $value) ?: [] as $item) {
+                $this->collectGroupIds($item, $groupIds);
+            }
+            return;
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                $this->collectGroupIds($item, $groupIds);
+            }
+            return;
+        }
+
+        if (is_numeric($value)) {
+            $groupIds[] = $value;
+        }
     }
 
     private function resolveGroupId(UserSubscription $subscription): ?int

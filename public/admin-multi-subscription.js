@@ -744,9 +744,36 @@
     }, true);
   }
 
-  function floatingButton() {
-    let button = document.querySelector('.xboard-ms-floating');
+  function isVisible(node) {
+    return Boolean(node?.getClientRects?.().length);
+  }
+
+  function isAdvancedFilterButton(node) {
+    if (!node || !isVisible(node)) return false;
+    const content = (node.textContent || '').replace(/\s+/g, ' ').trim();
+    return [
+      '\u9ad8\u7ea7\u7b5b\u9009',
+      'Advanced Filter',
+      '\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u044b\u0439 \u0444\u0438\u043b\u044c\u0442\u0440',
+    ].some((label) => content.includes(label));
+  }
+
+  function findAdvancedFilterButton() {
+    return Array.from(document.querySelectorAll('button,[role="button"]'))
+      .find(isAdvancedFilterButton);
+  }
+
+  function toolbarButton() {
+    document.querySelectorAll('.xboard-ms-floating').forEach((node) => node.remove());
+
+    let button = document.querySelector('.xboard-ms-toolbar-entry');
     if (!isUserManagePage()) {
+      button?.remove();
+      return;
+    }
+
+    const advancedButton = findAdvancedFilterButton();
+    if (!advancedButton?.parentElement) {
       button?.remove();
       return;
     }
@@ -754,11 +781,19 @@
     ensureStyle();
     if (!button) {
       button = document.createElement('button');
-      button.className = 'xboard-ms-entry xboard-ms-floating';
       button.type = 'button';
       button.dataset.msEntry = '1';
+      button.dataset.msToolbar = '1';
       button.textContent = text.title;
-      document.body.appendChild(button);
+    }
+
+    button.className = advancedButton.className || 'xboard-ms-entry';
+    button.classList.add('xboard-ms-toolbar-entry');
+    button.dataset.lookup = '';
+    delete button.dataset.userId;
+
+    if (button.parentElement !== advancedButton.parentElement || button.nextSibling !== advancedButton) {
+      advancedButton.parentElement.insertBefore(button, advancedButton);
     }
   }
 
@@ -803,7 +838,7 @@
     if (enhanceTimer) return;
     enhanceTimer = window.setTimeout(() => {
       enhanceTimer = null;
-      floatingButton();
+      toolbarButton();
       enhanceRows();
     }, 200);
   }

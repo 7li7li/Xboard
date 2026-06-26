@@ -2,11 +2,14 @@
   const cardId = 'xboard-multi-subscriptions';
   const styleId = 'xboard-multi-subscriptions-style';
   const modalId = 'xboard-multi-subscriptions-modal';
+  const orderDetailAttr = 'data-xboard-batch-renewal-enhanced';
   let lastPayload = '';
   let latestData = null;
   let loading = false;
   let queuedRefreshTimer = null;
   let fallbackRestoreTimer = null;
+  let orderDetailTimer = null;
+  let orderDetailTradeNo = '';
   const bootstrapRefreshDelays = [80, 250, 500, 900, 1400, 2200, 3500, 5500, 8000];
 
   const text = {
@@ -35,6 +38,9 @@
     renewAllSubscriptions: '\u7eed\u8d39\u6240\u6709\u5957\u9910\u8ba2\u9605',
     renewUnavailable: '\u8be5\u8ba2\u9605\u65e0\u6cd5\u7eed\u8d39',
     renewAllUnavailable: '\u6ca1\u6709\u53ef\u7eed\u8d39\u7684\u5957\u9910\u8ba2\u9605',
+    batchRenewal: '\u6279\u91cf\u7eed\u8d39',
+    subscriptionsCount: '\u4e2a\u8ba2\u9605',
+    renewalDetails: '\u7eed\u8d39\u660e\u7ec6',
     chooseClient: '\u9009\u62e9\u5ba2\u6237\u7aef',
     choosePeriod: '\u9009\u62e9\u7eed\u8d39\u5468\u671f',
     confirmRenew: '\u786e\u8ba4\u7eed\u8d39',
@@ -55,6 +61,11 @@
   function isDashboard() {
     const hash = window.location.hash || '#/dashboard';
     return hash === '#/' || hash === '#/dashboard' || hash.startsWith('#/dashboard?');
+  }
+
+  function currentOrderTradeNo() {
+    const match = (window.location.hash || '').match(/^#\/order\/([^?#]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
   }
 
   function getAuthToken() {
@@ -283,6 +294,10 @@
 
   function formatPrice(value) {
     return `\u00a5${Number(value || 0).toFixed(2)}`;
+  }
+
+  function formatCents(value) {
+    return formatPrice(Number(value || 0) / 100);
   }
 
   function ensureStyle() {
@@ -514,6 +529,33 @@
         font-weight: 650;
         justify-content: space-between;
       }
+      .xboard-multi-subscriptions-order-items {
+        border-top: 1px solid rgba(148, 163, 184, .18);
+        display: grid;
+        gap: .45rem;
+        margin-top: .75rem;
+        padding-top: .75rem;
+      }
+      .xboard-multi-subscriptions-order-items__title {
+        color: #64748b;
+        font-size: .8125rem;
+        font-weight: 650;
+      }
+      .xboard-multi-subscriptions-order-item {
+        align-items: center;
+        display: flex;
+        gap: .75rem;
+        justify-content: space-between;
+      }
+      .xboard-multi-subscriptions-order-item span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .xboard-multi-subscriptions-order-item strong {
+        flex: none;
+      }
       .xboard-node-export-shortcut {
         cursor: pointer;
       }
@@ -545,6 +587,7 @@
         color: #93c5fd;
       }
       html.dark .xboard-multi-subscriptions-modal__summary,
+      html.dark .xboard-multi-subscriptions-order-items__title,
       .dark .xboard-multi-subscriptions-modal__summary {
         color: #94a3b8;
       }
@@ -726,6 +769,131 @@
 
     const target = modal.querySelector('[data-renew-all-total]');
     if (target) target.textContent = formatPrice(total);
+  }
+
+  async function fetchOrderDetail(tradeNo) {
+    const token = getAuthToken();
+    if (!token || !tradeNo) return null;
+
+    const response = await window.fetch(`${apiBase()}/user/order/detail?trade_no=${encodeURIComponent(tradeNo)}&t=${Date.now()}`, {
+      headers: {
+        Authorization: token,
+        Accept: 'application/json',
+        'Content-Language': window.localStorage.getItem('locale') || 'zh-CN',
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    return payload?.data || null;
+  }
+
+  function findInfoCardByTitle(title) {
+    return Array.from(document.querySelectorAll('.n-card')).find((card) => {
+      const heading = card.querySelector('.n-card-header__main, .n-card-header');
+      return (heading?.textContent || '').includes(title);
+    });
+  }
+
+  function updateProductInfoCard(order) {
+    const card = findInfoCardByTitle('\u5546\u54c1\u4fe1\u606f');
+    if (!card) return false;
+
+    const rows = Array.from(card.querySelectorAll('.n-card__content > div'));
+    const nameRow = rows.find((row) => row.textContent.includes('\u4ea7\u54c1\u540d\u79f0'));
+    const trafficRow = rows.find((row) => row.textContent.includes('\u4ea7\u54c1\u6d41\u91cf'));
+    const nameValue = nameRow?.querySelector('div:last-child');
+    const trafficValue = trafficRow?.querySelector('div:last-child');
+
+    if (nameValue) nameValue.textContent = `${text.batchRenewal} x ${order.order_items.length}`;
+    if (trafficValue) trafficValue.textContent = `${Number(order.plan?.transfer_enable || 0)} GB`;
+
+    const content = card.querySelector('.n-card__content');
+    if (content && !content.querySelector('[data-xboard-order-items]')) {
+      const details = document.createElement('div');
+      details.dataset.xboardOrderItems = '1';
+      details.className = 'xboard-multi-subscriptions-order-items';
+      details.innerHTML = `
+        <div class="xboard-multi-subscriptions-order-items__title">${text.renewalDetails}</div>
+        ${order.order_items.map((item) => `
+          <div class="xboard-multi-subscriptions-order-item">
+            <span>${escapeHtml(item.plan_name || `${text.plan} #${item.plan_id}`)}</span>
+            <strong>${escapeHtml(formatCents(item.amount))}</strong>
+          </div>
+        `).join('')}
+      `;
+      content.appendChild(details);
+    }
+
+    card.setAttribute(orderDetailAttr, '1');
+    return true;
+  }
+
+  function updateOrderTotalCard(order) {
+    const card = Array.from(document.querySelectorAll('div')).find((node) => (
+      node.textContent.includes('\u8ba2\u5355\u603b\u989d')
+      && node.textContent.includes('\u603b\u8ba1')
+      && node.querySelector('button')
+    ));
+    if (!card) return false;
+
+    const itemAmount = Array.isArray(order.order_items)
+      ? order.order_items.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+      : 0;
+    const grossAmount = itemAmount || (
+      Number(order.total_amount || 0)
+      + Number(order.balance_amount || 0)
+      + Number(order.surplus_amount || 0)
+      + Number(order.discount_amount || 0)
+      - Number(order.refund_amount ?? order.surplus_credit ?? 0)
+    );
+    const payableAmount = Number(order.total_amount || 0);
+
+    const amountNodes = Array.from(card.querySelectorAll('div')).filter((node) => (
+      node.childElementCount === 0 && /[¥￥]\s*\d/.test(node.textContent || '')
+    ));
+    if (amountNodes[0]) {
+      const currency = (amountNodes[0].textContent.match(/^[^\d-]+/) || [''])[0];
+      amountNodes[0].textContent = `${currency}${formatCents(grossAmount).replace(/^[¥￥]/, '')}`;
+    }
+    if (amountNodes.length > 0) {
+      const totalNode = amountNodes[amountNodes.length - 1];
+      const currency = (totalNode.textContent.match(/^[^\d-]+/) || [''])[0];
+      const suffix = (totalNode.textContent.match(/\s+[A-Z]{2,5}$/) || [''])[0];
+      totalNode.textContent = `${currency}${formatCents(payableAmount).replace(/^[¥￥]/, '')}${suffix}`;
+    }
+
+    card.setAttribute(orderDetailAttr, '1');
+    return true;
+  }
+
+  async function enhanceOrderDetail() {
+    const tradeNo = currentOrderTradeNo();
+    if (!tradeNo) return;
+
+    if (orderDetailTradeNo === tradeNo && document.querySelector(`[${orderDetailAttr}="1"]`)) {
+      return;
+    }
+
+    try {
+      const order = await fetchOrderDetail(tradeNo);
+      if (!order || !Array.isArray(order.order_items) || order.order_items.length <= 1) return;
+
+      const updatedProduct = updateProductInfoCard(order);
+      const updatedTotal = updateOrderTotalCard(order);
+      if (updatedProduct || updatedTotal) {
+        orderDetailTradeNo = tradeNo;
+      }
+    } catch (error) {
+      // Keep the stock order detail page untouched if enhancement fails.
+    }
+  }
+
+  function scheduleOrderDetailEnhance() {
+    if (!currentOrderTradeNo()) return;
+    if (orderDetailTimer) return;
+    orderDetailTimer = window.setTimeout(() => {
+      orderDetailTimer = null;
+      enhanceOrderDetail();
+    }, 300);
   }
 
   async function openRenewAllModal() {
@@ -1232,6 +1400,7 @@
 
   function scheduleRefresh() {
     prepareDashboardForMultiSubscriptions();
+    scheduleOrderDetailEnhance();
     if (!isDashboard()) return;
 
     bootstrapRefreshDelays.forEach((delay) => window.setTimeout(refresh, delay));
@@ -1245,6 +1414,7 @@
   }
 
   window.addEventListener('hashchange', () => {
+    orderDetailTradeNo = '';
     if (latestData) render(latestData);
     scheduleRefresh();
   });
@@ -1257,6 +1427,8 @@
   }
 
   new MutationObserver(() => {
+    scheduleOrderDetailEnhance();
+
     if (!isDashboard()) {
       prepareDashboardForMultiSubscriptions();
       return;

@@ -33,13 +33,21 @@ class TrafficFetchJob implements ShouldQueue
     public function handle(): void
     {
         $userIds = array_keys($this->data);
-        $users = User::whereIn('id', $userIds)->get()->keyBy('id');
+        $users = User::whereIn('id', $userIds)
+            ->withCount('subscriptions')
+            ->get()
+            ->keyBy('id');
         $subscriptionService = app(UserSubscriptionService::class);
 
         foreach ($this->data as $uid => $v) {
             $user = $users->get((int) $uid);
             if (!$user) {
                 continue;
+            }
+
+            if ((int) ($user->subscriptions_count ?? 0) === 0 && $user->plan_id) {
+                $subscriptionService->ensureSubscriptionFromLegacyUser($user);
+                $user->refresh();
             }
 
             $subscriptionService->consumeTraffic(
