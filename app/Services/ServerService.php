@@ -130,10 +130,7 @@ class ServerService
      */
     public static function processTraffic(Server $node, array $traffic): void
     {
-        $data = array_filter($traffic, fn($item) =>
-            is_array($item) && count($item) === 2
-            && is_numeric($item[0]) && is_numeric($item[1])
-        );
+        $data = self::normalizeTrafficPayload($traffic);
 
         if (empty($data)) {
             return;
@@ -146,6 +143,78 @@ class ServerService
         Cache::put(CacheKey::get("SERVER_{$nodeType}_LAST_PUSH_AT", $nodeId), time(), 3600);
 
         (new UserService())->trafficFetch($node, $node->type, $data);
+    }
+
+    private static function normalizeTrafficPayload(array $traffic): array
+    {
+        $data = [];
+
+        foreach ($traffic as $key => $item) {
+            $record = self::normalizeTrafficRecord($key, $item);
+            if (!$record) {
+                continue;
+            }
+
+            [$uid, $upload, $download] = $record;
+            if (!isset($data[$uid])) {
+                $data[$uid] = [0, 0];
+            }
+
+            $data[$uid][0] += $upload;
+            $data[$uid][1] += $download;
+        }
+
+        return array_filter($data, fn(array $item): bool => ($item[0] + $item[1]) > 0);
+    }
+
+    private static function normalizeTrafficRecord(int|string $key, mixed $item): ?array
+    {
+        if (!is_array($item)) {
+            return null;
+        }
+
+        $uid = self::numericTrafficValue($item, ['user_id', 'uid', 'userId', 'id']);
+        $upload = self::numericTrafficValue($item, ['u', 'up', 'upload', 'uploaded', 'upload_bytes', 'uplink', 'uploadTraffic']);
+        $download = self::numericTrafficValue($item, ['d', 'down', 'download', 'downloaded', 'download_bytes', 'downlink', 'downloadTraffic']);
+
+        if ($uid === null && is_numeric($key)) {
+            $uid = (int) $key;
+        }
+
+        if ($uid !== null && $upload !== null && $download !== null) {
+            return self::validTrafficRecord($uid, $upload, $download);
+        }
+
+        $values = array_values($item);
+        if (count($values) >= 3 && is_numeric($values[0]) && is_numeric($values[1]) && is_numeric($values[2])) {
+            return self::validTrafficRecord((int) $values[0], (int) $values[1], (int) $values[2]);
+        }
+
+        if ($uid !== null && count($values) >= 2 && is_numeric($values[0]) && is_numeric($values[1])) {
+            return self::validTrafficRecord($uid, (int) $values[0], (int) $values[1]);
+        }
+
+        return null;
+    }
+
+    private static function numericTrafficValue(array $item, array $keys): ?int
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $item) && is_numeric($item[$key])) {
+                return (int) $item[$key];
+            }
+        }
+
+        return null;
+    }
+
+    private static function validTrafficRecord(int $uid, int $upload, int $download): ?array
+    {
+        if ($uid <= 0 || $upload < 0 || $download < 0 || ($upload + $download) <= 0) {
+            return null;
+        }
+
+        return [$uid, $upload, $download];
     }
 
     /**

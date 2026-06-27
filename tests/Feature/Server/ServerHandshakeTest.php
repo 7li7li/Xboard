@@ -154,6 +154,77 @@ class ServerHandshakeTest extends TestCase
         $this->assertSame(2048, $user->d);
     }
 
+    public function test_v2_report_consumes_keyed_object_traffic_payload(): void
+    {
+        Queue::fake();
+
+        $server = $this->makeServer();
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan);
+
+        $response = $this->postJson('/api/v2/server/report', [
+            'token' => 'server-token',
+            'node_id' => $server->id,
+            'traffic' => [
+                $user->id => [
+                    'u' => '512',
+                    'd' => '1536',
+                ],
+            ],
+        ]);
+
+        $response->assertOk()->assertJson(['data' => true]);
+        Queue::assertPushed(TrafficFetchJob::class);
+
+        Redis::shouldReceive('sadd')->once();
+        Queue::pushed(TrafficFetchJob::class)->first()->handle();
+
+        $subscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(512, $subscription->u);
+        $this->assertSame(1536, $subscription->d);
+        $this->assertSame(512, $user->u);
+        $this->assertSame(1536, $user->d);
+    }
+
+    public function test_v2_report_consumes_list_object_traffic_payload(): void
+    {
+        Queue::fake();
+
+        $server = $this->makeServer();
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan);
+
+        $response = $this->postJson('/api/v2/server/report', [
+            'token' => 'server-token',
+            'node_id' => $server->id,
+            'traffic' => [
+                [
+                    'user_id' => $user->id,
+                    'u' => 700,
+                    'd' => 900,
+                ],
+            ],
+        ]);
+
+        $response->assertOk()->assertJson(['data' => true]);
+        Queue::assertPushed(TrafficFetchJob::class);
+
+        Redis::shouldReceive('sadd')->once();
+        Queue::pushed(TrafficFetchJob::class)->first()->handle();
+
+        $subscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(700, $subscription->u);
+        $this->assertSame(900, $subscription->d);
+        $this->assertSame(700, $user->u);
+        $this->assertSame(900, $user->d);
+    }
+
     public function test_v2_report_consumes_traffic_when_legacy_group_ids_are_json_strings(): void
     {
         $server = $this->makeServer(['group_ids' => '["1"]']);
@@ -173,6 +244,53 @@ class ServerHandshakeTest extends TestCase
         $this->assertSame(200, $subscription->d);
         $this->assertSame(100, $user->u);
         $this->assertSame(200, $user->d);
+    }
+
+    public function test_traffic_consumes_only_available_subscription_when_group_metadata_does_not_match(): void
+    {
+        $server = $this->makeServer(['group_ids' => [2]]);
+        $plan = $this->makePlan(['group_id' => 1]);
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan);
+        Redis::shouldReceive('sadd')->once();
+
+        (new TrafficFetchJob($server->toArray(), [
+            $user->id => [321, 654],
+        ], $server->type, time()))->handle();
+
+        $subscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(321, $subscription->u);
+        $this->assertSame(654, $subscription->d);
+        $this->assertSame(321, $user->u);
+        $this->assertSame(654, $user->d);
+    }
+
+    public function test_traffic_does_not_fallback_when_multiple_available_subscriptions_do_not_match_node_group(): void
+    {
+        $server = $this->makeServer(['group_ids' => [3]]);
+        $plan = $this->makePlan(['group_id' => 1]);
+        $otherPlan = $this->makePlan(['name' => 'other-plan', 'group_id' => 2]);
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan);
+        $otherSubscription = $this->makeSubscription($user, $otherPlan);
+        Redis::shouldReceive('sadd')->once();
+
+        (new TrafficFetchJob($server->toArray(), [
+            $user->id => [321, 654],
+        ], $server->type, time()))->handle();
+
+        $subscription->refresh();
+        $otherSubscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(0, $subscription->u);
+        $this->assertSame(0, $subscription->d);
+        $this->assertSame(0, $otherSubscription->u);
+        $this->assertSame(0, $otherSubscription->d);
+        $this->assertSame(0, $user->u);
+        $this->assertSame(0, $user->d);
     }
 
     public function test_v2_report_backfills_legacy_user_subscription_before_consuming_traffic(): void

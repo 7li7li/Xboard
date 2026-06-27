@@ -440,6 +440,21 @@ class UserSubscriptionService
                 ->orderBy('id')
                 ->get();
 
+            if ($subscriptions->isEmpty()) {
+                $availableSubscriptions = UserSubscription::with('plan')
+                    ->where('user_id', $user->id)
+                    ->available()
+                    ->lockForUpdate()
+                    ->orderByRaw('expired_at IS NULL ASC')
+                    ->orderBy('expired_at')
+                    ->orderBy('id')
+                    ->get();
+
+                if ($availableSubscriptions->count() === 1) {
+                    $subscriptions = $availableSubscriptions;
+                }
+            }
+
             $remainingTotal = $total;
             $remainingUpload = $upload;
             $remainingDownload = $download;
