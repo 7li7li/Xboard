@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
 class TrafficFetchJob implements ShouldQueue
@@ -64,7 +65,13 @@ class TrafficFetchJob implements ShouldQueue
         }
 
         if (!empty($userIds)) {
-            Redis::sadd('traffic:pending_check', ...$userIds);
+            try {
+                Redis::sadd('traffic:pending_check', ...$userIds);
+            } catch (\Throwable $e) {
+                Log::warning('Unable to mark users for traffic exceeded check: ' . $e->getMessage(), [
+                    'user_ids' => $userIds,
+                ]);
+            }
         }
     }
 }

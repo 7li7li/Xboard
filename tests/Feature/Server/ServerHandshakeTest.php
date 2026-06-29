@@ -6,6 +6,8 @@ use App\Jobs\TrafficFetchJob;
 use App\Models\Plan;
 use App\Models\Server;
 use App\Models\ServerMachine;
+use App\Models\StatServer;
+use App\Models\StatUser;
 use App\Models\User;
 use App\Models\UserSubscription;
 use App\Utils\Helper;
@@ -312,6 +314,47 @@ class ServerHandshakeTest extends TestCase
         $this->assertSame(400, $subscription->d);
         $this->assertSame(300, $user->u);
         $this->assertSame(400, $user->d);
+    }
+
+    public function test_v2_report_sync_queue_records_traffic_when_redis_marker_fails(): void
+    {
+        config()->set('queue.default', 'sync');
+
+        $server = $this->makeServer();
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan);
+
+        Redis::shouldReceive('sadd')->once()->andThrow(new \RuntimeException('redis unavailable'));
+
+        $response = $this->postJson('/api/v2/server/report', [
+            'token' => 'server-token',
+            'node_id' => $server->id,
+            'traffic' => [
+                $user->id => [111, 222],
+            ],
+        ]);
+
+        $response->assertOk()->assertJson(['data' => true]);
+
+        $subscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(111, $subscription->u);
+        $this->assertSame(222, $subscription->d);
+        $this->assertSame(111, $user->u);
+        $this->assertSame(222, $user->d);
+
+        $this->assertDatabaseHas((new StatUser())->getTable(), [
+            'user_id' => $user->id,
+            'u' => 111,
+            'd' => 222,
+        ]);
+        $this->assertDatabaseHas((new StatServer())->getTable(), [
+            'server_id' => $server->id,
+            'u' => 111,
+            'd' => 222,
+        ]);
     }
 
     private function makeServer(array $overrides = []): Server

@@ -246,7 +246,7 @@ class AdminRoute
                 $router->get('/getSystemStatus', [SystemController::class, 'getSystemStatus']);
                 $router->get('/getQueueStats', [SystemController::class, 'getQueueStats']);
                 $router->get('/getQueueWorkload', [SystemController::class, 'getQueueWorkload']);
-                $router->get('/getQueueMasters', '\\Laravel\\Horizon\\Http\\Controllers\\MasterSupervisorController@index');
+                $router->get('/getQueueMasters', [SystemController::class, 'getQueueMasters']);
                 $router->get('/getHorizonFailedJobs', [SystemController::class, 'getHorizonFailedJobs']);
                 $router->any('/getAuditLog', [SystemController::class, 'getAuditLog']);
             });
