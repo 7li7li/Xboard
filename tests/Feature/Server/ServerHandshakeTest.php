@@ -316,6 +316,35 @@ class ServerHandshakeTest extends TestCase
         $this->assertSame(400, $user->d);
     }
 
+    public function test_v2_report_backfills_legacy_user_traffic_into_matching_subscription(): void
+    {
+        $server = $this->makeServer(['group_ids' => [2]]);
+        $plan = $this->makePlan(['group_id' => 1]);
+        $otherPlan = $this->makePlan(['name' => 'other-plan', 'group_id' => 2]);
+        $user = $this->makeUser($plan, [
+            'u' => 1000,
+            'd' => 2000,
+        ]);
+        $subscription = $this->makeSubscription($user, $plan);
+        $otherSubscription = $this->makeSubscription($user, $otherPlan);
+        Redis::shouldReceive('sadd')->once();
+
+        (new TrafficFetchJob($server->toArray(), [
+            $user->id => [300, 400],
+        ], $server->type, time()))->handle();
+
+        $subscription->refresh();
+        $otherSubscription->refresh();
+        $user->refresh();
+
+        $this->assertSame(0, $subscription->u);
+        $this->assertSame(0, $subscription->d);
+        $this->assertSame(1300, $otherSubscription->u);
+        $this->assertSame(2400, $otherSubscription->d);
+        $this->assertSame(1300, $user->u);
+        $this->assertSame(2400, $user->d);
+    }
+
     public function test_v2_report_sync_queue_records_traffic_when_redis_marker_fails(): void
     {
         config()->set('queue.default', 'sync');

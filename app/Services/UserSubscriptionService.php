@@ -257,7 +257,9 @@ class UserSubscriptionService
         }
 
         if (UserSubscription::where('user_id', $user->id)->exists()) {
-            $this->syncUserAggregate($user);
+            if (!$this->backfillLegacyTrafficToSubscriptions($user)) {
+                $this->syncUserAggregate($user);
+            }
             return null;
         }
 
@@ -426,6 +428,8 @@ class UserSubscriptionService
             return;
         }
 
+        $this->backfillLegacyTrafficToSubscriptions($user, $groupIds);
+
         DB::transaction(function () use ($user, $groupIds, $upload, $download, $total) {
             $subscriptions = UserSubscription::with('plan')
                 ->where('user_id', $user->id)
@@ -497,6 +501,58 @@ class UserSubscriptionService
         });
     }
 
+    public function backfillLegacyTrafficToSubscriptions(User $user, mixed $preferredGroupIds = null): bool
+    {
+        $changed = DB::transaction(function () use ($user, $preferredGroupIds) {
+            $lockedUser = User::whereKey($user->id)->lockForUpdate()->first();
+            if (!$lockedUser) {
+                return false;
+            }
+
+            $legacyUpload = (int) ($lockedUser->u ?? 0);
+            $legacyDownload = (int) ($lockedUser->d ?? 0);
+            if (($legacyUpload + $legacyDownload) <= 0) {
+                return false;
+            }
+
+            $subscriptions = UserSubscription::with('plan')
+                ->where('user_id', $lockedUser->id)
+                ->active()
+                ->lockForUpdate()
+                ->orderByRaw('expired_at IS NULL ASC')
+                ->orderBy('expired_at')
+                ->orderBy('id')
+                ->get();
+
+            if ($subscriptions->isEmpty()) {
+                return false;
+            }
+
+            $uploadDelta = max(0, $legacyUpload - (int) $subscriptions->sum('u'));
+            $downloadDelta = max(0, $legacyDownload - (int) $subscriptions->sum('d'));
+            if (($uploadDelta + $downloadDelta) <= 0) {
+                return false;
+            }
+
+            $target = $this->chooseLegacyTrafficBackfillTarget($subscriptions, $preferredGroupIds);
+            if (!$target) {
+                return false;
+            }
+
+            $target->u = (int) ($target->u ?? 0) + $uploadDelta;
+            $target->d = (int) ($target->d ?? 0) + $downloadDelta;
+            $target->save();
+
+            return true;
+        });
+
+        if ($changed) {
+            $this->syncUserAggregate($user);
+        }
+
+        return $changed;
+    }
+
     public function syncPrimarySubscriptionFromUser(User $user): ?UserSubscription
     {
         if (!$user->plan_id) {
@@ -513,7 +569,9 @@ class UserSubscriptionService
 
         $activeSubscriptions = $user->subscriptions()->active()->get();
         if ($activeSubscriptions->count() > 1) {
-            $this->syncUserAggregate($user);
+            if (!$this->backfillLegacyTrafficToSubscriptions($user)) {
+                $this->syncUserAggregate($user);
+            }
             return null;
         }
 
@@ -694,6 +752,22 @@ class UserSubscriptionService
 
         $sum = $values->filter()->sum();
         return $sum > 0 ? (int) $sum : null;
+    }
+
+    private function chooseLegacyTrafficBackfillTarget(EloquentCollection|Collection $subscriptions, mixed $preferredGroupIds = null): ?UserSubscription
+    {
+        $groupIds = $this->normalizeGroupIds($preferredGroupIds);
+        if (!empty($groupIds)) {
+            $matched = $subscriptions
+                ->filter(fn(UserSubscription $subscription): bool => in_array($this->resolveGroupId($subscription), $groupIds, true))
+                ->values();
+
+            if ($matched->isNotEmpty()) {
+                return $matched->first();
+            }
+        }
+
+        return $this->choosePrimarySubscription($subscriptions);
     }
 
     private function normalizeGroupIds(mixed $groupIds): array

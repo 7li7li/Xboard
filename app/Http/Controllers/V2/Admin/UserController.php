@@ -254,7 +254,12 @@ class UserController extends Controller
         ], [
             'id.required' => '用户ID不能为空'
         ]);
-        $user = User::find($request->input('id'))->load(['invite_user', 'subscriptions.plan']);
+        $user = User::find($request->input('id'));
+        if (!$user) {
+            return $this->fail([400202, 'User does not exist']);
+        }
+        app(UserSubscriptionService::class)->backfillLegacyTrafficToSubscriptions($user);
+        $user->refresh()->load(['invite_user', 'subscriptions.plan']);
         $user = HookManager::filter('admin.user.detail', $user, $request);
         return $this->success($user);
     }
@@ -370,6 +375,9 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400202, 'User does not exist']);
         }
+
+        app(UserSubscriptionService::class)->backfillLegacyTrafficToSubscriptions($user);
+        $user->refresh()->load(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan']);
 
         return $this->success(self::transformUserData($user));
     }

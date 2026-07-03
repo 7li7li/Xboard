@@ -14,6 +14,7 @@ use App\Models\UserSubscription;
 use App\Services\Auth\LoginService;
 use App\Services\AuthService;
 use App\Services\Plugin\HookManager;
+use App\Services\UserSubscriptionService;
 use App\Services\UserService;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
@@ -116,6 +117,32 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        app(UserSubscriptionService::class)->backfillLegacyTrafficToSubscriptions($user);
+        $user = User::where('id', $request->user()->id)
+            ->select([
+                'id',
+                'email',
+                'transfer_enable',
+                'u',
+                'd',
+                'last_login_at',
+                'created_at',
+                'banned',
+                'remind_expire',
+                'remind_traffic',
+                'expired_at',
+                'balance',
+                'commission_balance',
+                'plan_id',
+                'discount',
+                'commission_rate',
+                'telegram_id',
+                'uuid',
+                'device_limit',
+                'speed_limit',
+                'next_reset_at'
+            ])
+            ->first();
         $user->load('subscriptions.plan');
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
         $user['subscriptions'] = $this->formatSubscriptions($user);
@@ -158,6 +185,23 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        app(UserSubscriptionService::class)->backfillLegacyTrafficToSubscriptions($user);
+        $user = User::where('id', $request->user()->id)
+            ->select([
+                'id',
+                'plan_id',
+                'token',
+                'expired_at',
+                'u',
+                'd',
+                'transfer_enable',
+                'email',
+                'uuid',
+                'device_limit',
+                'speed_limit',
+                'next_reset_at'
+            ])
+            ->first();
         $user->load('subscriptions.plan');
         if ($user->plan_id) {
             $user['plan'] = Plan::find($user->plan_id);
