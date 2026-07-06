@@ -1,0 +1,8 @@
+{
+    "name": "LDC Pay",
+    "code": "ldc_pay",
+    "type": "payment",
+    "version": "1.0.0",
+    "description": "LDC EPay-compatible payment plugin",
+    "author": "XBoard Team"
+}
