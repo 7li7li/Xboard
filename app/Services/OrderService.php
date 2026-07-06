@@ -144,6 +144,48 @@ class OrderService
         });
     }
 
+    public static function createBatchRenewalForAllSubscriptions(
+        User $user,
+        string $preferredPeriod,
+        ?string $couponCode = null,
+    ): Order {
+        $period = PlanService::getPeriodKey($preferredPeriod);
+        if ($period === Plan::PERIOD_RESET_TRAFFIC) {
+            throw new ApiException(__('Wrong plan period'));
+        }
+
+        $subscriptions = UserSubscription::with('plan')
+            ->where('user_id', $user->id)
+            ->whereIn('status', self::renewableSubscriptionStatuses())
+            ->orderBy('id')
+            ->get();
+
+        $items = [];
+        foreach ($subscriptions as $subscription) {
+            /** @var UserSubscription $subscription */
+            $plan = $subscription->plan;
+            if (!$plan || !$plan->renew) {
+                continue;
+            }
+
+            $renewalPeriod = self::resolveRenewalPeriod($plan, $period);
+            if (!$renewalPeriod) {
+                continue;
+            }
+
+            $items[] = [
+                'subscription_id' => $subscription->id,
+                'period' => $renewalPeriod,
+            ];
+        }
+
+        if (empty($items)) {
+            throw new ApiException('Please select the subscription to renew');
+        }
+
+        return self::createBatchRenewalFromRequest($user, $items, $couponCode);
+    }
+
     public function open(): void
     {
         $order = $this->order;
@@ -434,7 +476,7 @@ class OrderService
         $subscriptions = UserSubscription::with('plan')
             ->where('user_id', $user->id)
             ->whereIn('id', array_keys($normalized))
-            ->active()
+            ->whereIn('status', self::renewableSubscriptionStatuses())
             ->get()
             ->keyBy('id');
 
@@ -452,7 +494,9 @@ class OrderService
             }
 
             $plan = $subscription->plan;
-            (new PlanService($plan))->validatePurchase($user, $period, $subscription->id, self::INTENT_RENEW);
+            if (!$plan->renew) {
+                throw new ApiException(__('This subscription cannot be renewed, please change to another subscription'));
+            }
 
             $price = $plan->prices[$period] ?? null;
             if ($price === null || $price <= 0) {
@@ -468,6 +512,30 @@ class OrderService
         }
 
         return $items;
+    }
+
+    private static function renewableSubscriptionStatuses(): array
+    {
+        return [
+            UserSubscription::STATUS_ACTIVE,
+            UserSubscription::STATUS_EXPIRED,
+        ];
+    }
+
+    private static function resolveRenewalPeriod(Plan $plan, string $preferredPeriod): ?string
+    {
+        $prices = $plan->prices ?? [];
+        if (($prices[$preferredPeriod] ?? 0) > 0) {
+            return $preferredPeriod;
+        }
+
+        foreach (array_values(Plan::LEGACY_PERIOD_MAPPING) as $period) {
+            if ($period !== Plan::PERIOD_RESET_TRAFFIC && ($prices[$period] ?? 0) > 0) {
+                return $period;
+            }
+        }
+
+        return null;
     }
 
     private function openBatchRenewalOrder(Order $order, UserSubscriptionService $subscriptionService): void
@@ -493,7 +561,7 @@ class OrderService
 
             $subscription = UserSubscription::where('id', (int) ($item['subscription_id'] ?? 0))
                 ->where('user_id', $order->user_id)
-                ->active()
+                ->whereIn('status', self::renewableSubscriptionStatuses())
                 ->lockForUpdate()
                 ->first();
             if (!$subscription) {

@@ -1,8 +1,16 @@
 (function () {
+  window.__xboardMultiSubscriptionLoaded = {
+    loadedAt: new Date().toISOString(),
+    version: window.__xboardMultiSubscriptionAsset?.version || '',
+  };
+
   const cardId = 'xboard-multi-subscriptions';
   const styleId = 'xboard-multi-subscriptions-style';
   const modalId = 'xboard-multi-subscriptions-modal';
   const orderDetailAttr = 'data-xboard-batch-renewal-enhanced';
+  const renewAllShortcutSelector = '[data-xboard-renew-all-shortcut="1"]';
+  const nodeExportShortcutSelector = '[data-xboard-node-export-shortcut="1"]';
+  const shortcutTargetSelector = 'a,button,[role="button"],.n-grid-item,.n-thing,[class*="shortcut"],[class*="Shortcut"],[class*="cursor-pointer"],[class*="hover:"]';
   let lastPayload = '';
   let latestData = null;
   let loading = false;
@@ -556,7 +564,8 @@
       .xboard-multi-subscriptions-order-item strong {
         flex: none;
       }
-      .xboard-node-export-shortcut {
+      .xboard-node-export-shortcut,
+      .xboard-renew-all-shortcut {
         cursor: pointer;
       }
       html.dark .xboard-multi-subscriptions,
@@ -746,11 +755,8 @@
       return false;
     }
 
-    if (Number(subscription.status) !== 1) {
-      return false;
-    }
-
-    if (subscription.expired_at && Number(subscription.expired_at) <= Date.now() / 1000) {
+    const status = Number(subscription.status);
+    if (status !== 1 && status !== 3) {
       return false;
     }
 
@@ -945,6 +951,47 @@
     });
   }
 
+  function openPendingRenewAllModal() {
+    if (!window.__xboardRenewAllModalRequested || !latestData || loading) {
+      return;
+    }
+
+    window.__xboardRenewAllModalRequested = false;
+    window.setTimeout(() => {
+      requestOpenRenewAllModal();
+    }, 0);
+  }
+
+  async function requestOpenRenewAllModal() {
+    if (!isDashboard()) {
+      window.__xboardRenewAllModalRequested = true;
+      window.location.hash = '#/dashboard';
+      queueRefresh(150);
+      return;
+    }
+
+    if (!latestData || loading) {
+      window.__xboardRenewAllModalRequested = true;
+      if (!loading) {
+        queueRefresh(0);
+      }
+      return;
+    }
+
+    window.__xboardRenewAllModalRequested = false;
+    await openRenewAllModal();
+  }
+
+  window.__xboardOpenRenewAllModal = requestOpenRenewAllModal;
+  window.addEventListener('xboard:open-renew-all-modal', (event) => {
+    event.preventDefault?.();
+    requestOpenRenewAllModal();
+  });
+
+  if (window.__xboardRenewAllModalRequested) {
+    window.setTimeout(requestOpenRenewAllModal, 0);
+  }
+
   async function createRenewOrder(subscription, period) {
     const token = getAuthToken();
     if (!token) {
@@ -1058,74 +1105,15 @@
   }
 
   function restoreLegacyShortcuts() {
+    document.querySelectorAll(`${renewAllShortcutSelector}, ${nodeExportShortcutSelector}`).forEach((node) => {
+      node.remove();
+    });
+
     document.querySelectorAll('[data-xboard-legacy-shortcut-hidden="1"]').forEach((node) => {
       node.style.display = node.dataset.xboardLegacyDisplay || '';
       delete node.dataset.xboardLegacyDisplay;
       delete node.dataset.xboardLegacyShortcutHidden;
     });
-  }
-
-  function isLegacyRenewShortcut(node) {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE || node.closest(`#${cardId}`) || node.closest(`#${modalId}`)) {
-      return false;
-    }
-
-    const renewLabels = [
-      '\u7eed\u8d39\u8ba2\u9605',
-      '\u5bf9\u60a8\u5f53\u524d\u7684\u8ba2\u9605\u8fdb\u884c\u7eed\u8d39',
-      'Renewal Subscription',
-      'Renew your current subscription',
-    ];
-    const otherShortcutLabels = [
-      '\u4e00\u952e\u8ba2\u9605',
-      '\u5feb\u901f\u5c06\u8282\u70b9\u5bfc\u5165\u5bf9\u5e94\u5ba2\u6237\u7aef\u8fdb\u884c\u4f7f\u7528',
-      '\u5b66\u4e60\u5982\u4f55\u4f7f\u7528',
-      '\u4e0d\u4f1a\u4f7f\u7528\uff0c\u67e5\u770b\u4f7f\u7528\u6559\u7a0b',
-      '\u626b\u63cf\u4e8c\u7ef4\u7801\u8ba2\u9605',
-      '\u4f7f\u7528\u652f\u6301\u626b\u7801\u7684\u5ba2\u6237\u7aef\u8fdb\u884c\u8ba2\u9605',
-      '\u8d2d\u4e70\u8ba2\u9605',
-      '\u5bf9\u60a8\u5f53\u524d\u7684\u8ba2\u9605\u8fdb\u884c\u8d2d\u4e70',
-      'One-click Subscription',
-      'Quickly export subscription into the client app',
-      'Learn how to use',
-      'I am a newbie, view the tutorial',
-      'Scan QR code to subscribe',
-      'Use a client app that supports scanning QR code to subscribe',
-      'Purchase Subscription',
-      'Purchase your current subscription',
-    ];
-
-    const content = (node.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!content || content.length > 240) {
-      return false;
-    }
-
-    return renewLabels.some((label) => content.includes(label))
-      && !otherShortcutLabels.some((label) => content.includes(label));
-  }
-
-  function findLegacyRenewShortcutTarget(node) {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) {
-      return null;
-    }
-
-    const selector = 'a,button,[role="button"],.n-grid-item,.n-thing';
-    const preferred = node.closest(selector);
-    if (isLegacyRenewShortcut(preferred)) {
-      return preferred;
-    }
-
-    let current = node;
-    let depth = 0;
-    while (current && current !== document.body && current !== document.documentElement && depth < 8) {
-      if (isLegacyRenewShortcut(current)) {
-        return current;
-      }
-      current = current.parentElement;
-      depth += 1;
-    }
-
-    return null;
   }
 
   function findShortcutSection() {
@@ -1170,6 +1158,8 @@
     clone.classList.add('xboard-node-export-shortcut');
     clone.dataset.xboardNodeExportShortcut = '1';
     clone.style.cursor = 'pointer';
+    clone.removeAttribute('id');
+    clone.querySelectorAll('[id]').forEach((item) => item.removeAttribute('id'));
 
     const titleLabels = [
       '\u7eed\u8d39\u8ba2\u9605',
@@ -1211,6 +1201,9 @@
       link.removeAttribute('href');
       link.removeAttribute('target');
     });
+    clone.querySelectorAll('button').forEach((button) => {
+      button.setAttribute('type', 'button');
+    });
 
     clone.addEventListener('click', (event) => {
       event.preventDefault();
@@ -1224,16 +1217,17 @@
 
   function ensureLegacyNodeExportShortcut() {
     if (!latestData?.node_export_url && !latestData?.subscribe_url) return;
-    if (document.querySelector('[data-xboard-node-export-shortcut="1"]')) return;
+    if (document.querySelector(nodeExportShortcutSelector)) return;
 
     const section = findShortcutSection();
     if (!section) return;
 
-    const candidates = Array.from(section.querySelectorAll('a,button,[role="button"],.n-grid-item,.n-thing'))
+    const candidates = Array.from(section.querySelectorAll(shortcutTargetSelector))
       .map((node) => node.closest('.n-grid-item') || node)
       .filter((node, index, list) => list.indexOf(node) === index)
       .filter((node) => {
-        if (node.closest(`#${cardId}`) || node.closest(`#${modalId}`)) return false;
+        if (node.closest(`#${cardId}`) || node.closest(`#${modalId}`) || node.closest(renewAllShortcutSelector)) return false;
+        if (node.dataset.xboardLegacyShortcutHidden === '1' || node.style.display === 'none') return false;
         const content = (node.textContent || '').replace(/\s+/g, ' ').trim();
         return content && content.length < 240;
       });
@@ -1245,35 +1239,15 @@
   }
 
   function hideLegacyShortcuts() {
-    restoreLegacyShortcuts();
     ensureLegacyNodeExportShortcut();
-
-    const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],.n-grid-item,.n-thing,[class*="shortcut"],[class*="Shortcut"]'));
-    nodes.forEach((node) => {
-      const target = findLegacyRenewShortcutTarget(node);
-      if (!target || target.dataset.xboardLegacyRenewAllBound) return;
-
-      target.dataset.xboardLegacyRenewAllBound = '1';
-      target.style.cursor = 'pointer';
-      target.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
-        openRenewAllModal();
-      }, true);
-    });
   }
 
-  document.addEventListener('click', (event) => {
-    if (!isDashboard()) return;
-    const target = findLegacyRenewShortcutTarget(event.target);
-    if (!target) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation?.();
-    openRenewAllModal();
-  }, true);
+  window.__xboardMultiSubscriptionDebug = function () {
+    return {
+      loaded: window.__xboardMultiSubscriptionLoaded || null,
+      shortcutSectionFound: !!findShortcutSection(),
+    };
+  };
 
   function render(data) {
     if (!isDashboard()) {
@@ -1308,9 +1282,7 @@
       const status = statusText(subscription);
       const warn = status === text.active ? '' : ' xboard-subscription-item__status--warn';
       const name = planName(subscription);
-      const renewDisabled = !subscription.plan || subscription.plan.renew === false || subscription.plan.renew === 0
-        ? ' disabled'
-        : '';
+      const renewDisabled = isRenewableSubscription(subscription) ? '' : ' disabled';
       const resetText = subscription.next_reset_at
         ? ` <span aria-hidden="true">/</span> ${text.nextReset} ${escapeHtml(formatDate(subscription.next_reset_at))}`
         : '';
@@ -1395,6 +1367,7 @@
       // Leave the stock dashboard untouched if this enhancement cannot load.
     } finally {
       loading = false;
+      openPendingRenewAllModal();
     }
   }
 

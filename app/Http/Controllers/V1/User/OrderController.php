@@ -60,8 +60,25 @@ class OrderController extends Controller
 
     public function save(OrderSave $request)
     {
+        $intent = $request->input('intent', OrderService::INTENT_PURCHASE);
+        $period = $request->input('period');
+        if ($period === Plan::PERIOD_RESET_TRAFFIC || $period === 'reset_price') {
+            $intent = OrderService::INTENT_RESET;
+        }
+
+        $items = $request->input('items', []);
+        $hasItems = is_array($items) && count($items) > 0;
+        $isRenewAllFallback = $intent === OrderService::INTENT_RENEW
+            && !$request->filled('subscription_id')
+            && !$request->filled('plan_id')
+            && !$hasItems;
+        $planRules = $isRenewAllFallback
+            ? ['nullable']
+            : ['required_without:items', 'nullable'];
+        $planRules[] = 'exists:App\Models\Plan,id';
+
         $request->validate([
-            'plan_id' => 'required_without:items|nullable|exists:App\Models\Plan,id',
+            'plan_id' => $planRules,
             'period' => 'required_without:items|nullable|string',
             'subscription_id' => 'nullable|integer',
             'intent' => 'nullable|in:purchase,renew,upgrade,reset',
@@ -77,9 +94,7 @@ class OrderController extends Controller
             throw new ApiException(__('You have an unpaid or pending order, please try again later or cancel it'));
         }
 
-        $intent = $request->input('intent', OrderService::INTENT_PURCHASE);
-        $items = $request->input('items', []);
-        if ($intent === OrderService::INTENT_RENEW && is_array($items) && count($items) > 0) {
+        if ($intent === OrderService::INTENT_RENEW && $hasItems) {
             $order = OrderService::createBatchRenewalFromRequest(
                 $user,
                 $items,
@@ -89,13 +104,19 @@ class OrderController extends Controller
             return $this->success($order->trade_no);
         }
 
+        $subscriptionId = $request->integer('subscription_id') ?: null;
+        if ($isRenewAllFallback) {
+            $order = OrderService::createBatchRenewalForAllSubscriptions(
+                $user,
+                (string) $period,
+                $request->input('coupon_code')
+            );
+
+            return $this->success($order->trade_no);
+        }
+
         $plan = Plan::findOrFail($request->input('plan_id'));
         $planService = new PlanService($plan);
-
-        $subscriptionId = $request->integer('subscription_id') ?: null;
-        if ($request->input('period') === Plan::PERIOD_RESET_TRAFFIC || $request->input('period') === 'reset_price') {
-            $intent = OrderService::INTENT_RESET;
-        }
 
         $planService->validatePurchase($user, $request->input('period'), $subscriptionId, $intent);
 

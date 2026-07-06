@@ -19,6 +19,33 @@ use Illuminate\Support\Facades\File;
 */
 
 
+Route::get('/xboard-theme/{theme}/{asset}', function (string $theme, string $asset) {
+    if (!preg_match('/^[A-Za-z0-9_-]+$/', $theme)) {
+        abort(404);
+    }
+
+    if (!in_array($asset, ['umi.js', 'multi-subscription.js'], true)) {
+        abort(404);
+    }
+
+    $themeService = new ThemeService();
+    $themePath = $themeService->getThemePath($theme);
+    $sourcePath = $themePath ? $themePath . '/assets/' . $asset : null;
+    $publicPath = public_path('theme/' . $theme . '/assets/' . $asset);
+    $scriptPath = $sourcePath && File::exists($sourcePath) ? $sourcePath : $publicPath;
+
+    if (!File::exists($scriptPath)) {
+        abort(404);
+    }
+
+    return response(File::get($scriptPath), 200, [
+        'Content-Type' => 'application/javascript; charset=UTF-8',
+        'Cache-Control' => 'no-cache, no-store, must-revalidate',
+        'Pragma' => 'no-cache',
+        'Expires' => '0',
+    ]);
+});
+
 Route::get('/', function (Request $request) {
     if (admin_setting('app_url') && admin_setting('safe_mode_enable', 0)) {
         $requestHost = $request->getHost();
