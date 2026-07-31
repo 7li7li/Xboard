@@ -1170,6 +1170,8 @@
       'Purchase Subscription',
       '\u5b66\u4e60\u5982\u4f55\u4f7f\u7528',
       'Learn how to use',
+      '\u67e5\u770b\u6559\u7a0b',
+      'View Tutorial',
     ];
     const descLabels = [
       '\u5bf9\u60a8\u5f53\u524d\u7684\u8ba2\u9605\u8fdb\u884c\u7eed\u8d39',
@@ -1216,26 +1218,7 @@
   }
 
   function ensureLegacyNodeExportShortcut() {
-    if (!latestData?.node_export_url && !latestData?.subscribe_url) return;
-    if (document.querySelector(nodeExportShortcutSelector)) return;
-
-    const section = findShortcutSection();
-    if (!section) return;
-
-    const candidates = Array.from(section.querySelectorAll(shortcutTargetSelector))
-      .map((node) => node.closest('.n-grid-item') || node)
-      .filter((node, index, list) => list.indexOf(node) === index)
-      .filter((node) => {
-        if (node.closest(`#${cardId}`) || node.closest(`#${modalId}`) || node.closest(renewAllShortcutSelector)) return false;
-        if (node.dataset.xboardLegacyShortcutHidden === '1' || node.style.display === 'none') return false;
-        const content = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        return content && content.length < 240;
-      });
-    const shortcutPattern = /\u8ba2\u9605|Subscription|\u6559\u7a0b|Tutorial|\u8d2d\u4e70|Purchase|\u7eed\u8d39|Renewal/;
-    const reference = candidates.find((node) => shortcutPattern.test(node.textContent || ''));
-    if (!reference || !reference.parentElement) return;
-
-    reference.parentElement.appendChild(createShortcutLike(reference));
+    // Node export is available from the subscription list; do not add a duplicate shortcut.
   }
 
   function hideLegacyShortcuts() {
