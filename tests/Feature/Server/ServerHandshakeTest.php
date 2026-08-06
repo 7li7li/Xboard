@@ -13,7 +13,6 @@ use App\Models\UserSubscription;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 use Tests\TestCase;
@@ -27,7 +26,7 @@ class ServerHandshakeTest extends TestCase
         parent::setUp();
 
         config()->set('app.key', 'base64:' . base64_encode(str_repeat('a', 32)));
-        Cache::forever('admin_settings', [
+        admin_setting([
             'server_token' => 'server-token',
             'server_ws_enable' => 0,
         ]);

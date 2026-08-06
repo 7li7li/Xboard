@@ -35,7 +35,6 @@ class TrafficResetService
           $resetCount++;
         }
       }
-      app(UserSubscriptionService::class)->syncUserAggregate($user);
       return $resetCount > 0;
     }
 
@@ -59,7 +58,6 @@ class TrafficResetService
           $resetCount++;
         }
       }
-      app(UserSubscriptionService::class)->syncUserAggregate($user);
       return $resetCount > 0;
     }
 
@@ -106,10 +104,14 @@ class TrafficResetService
     }
   }
 
-  public function performResetSubscription(UserSubscription $subscription, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
+  public function performResetSubscription(
+    UserSubscription $subscription,
+    string $triggerSource = TrafficResetLog::SOURCE_MANUAL,
+    ?string $resetType = null
+  ): bool
   {
     try {
-      return DB::transaction(function () use ($subscription, $triggerSource) {
+      return DB::transaction(function () use ($subscription, $triggerSource, $resetType) {
         /** @var UserSubscription|null $locked */
         $locked = UserSubscription::lockForUpdate()->find($subscription->id);
         if (!$locked || !$locked->isActive()) {
@@ -129,8 +131,16 @@ class TrafficResetService
           'next_reset_at' => $nextResetTime ? $nextResetTime->timestamp : null,
         ]);
 
-        $this->recordResetLog($locked->user, [
-          'reset_type' => $this->getResetTypeFromPlan($locked->plan),
+        // Keep the legacy user-level counters in sync with subscription usage.
+        /** @var User $subscriptionUser */
+        $subscriptionUser = $locked->user;
+        $user = app(UserSubscriptionService::class)->syncUserAggregate($subscriptionUser);
+
+        /** @var Plan|null $plan */
+        $plan = $locked->plan;
+
+        $this->recordResetLog($user, [
+          'reset_type' => $resetType ?? $this->getResetTypeFromPlan($plan),
           'trigger_source' => $triggerSource,
           'old_upload' => $oldUpload,
           'old_download' => $oldDownload,
@@ -144,8 +154,18 @@ class TrafficResetService
           ],
         ]);
 
-        $this->clearUserCache($locked->user);
+        $this->clearUserCache($user);
         HookManager::call('traffic.subscription.reset.after', $locked);
+        DB::afterCommit(function () use ($user): void {
+          try {
+            NodeSyncService::notifyUserChanged($user->refresh());
+          } catch (\Throwable $e) {
+            Log::warning('Failed to notify nodes after subscription traffic reset', [
+              'user_id' => $user->id,
+              'error' => $e->getMessage(),
+            ]);
+          }
+        });
         return true;
       });
     } catch (\Exception $e) {

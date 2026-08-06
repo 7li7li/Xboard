@@ -334,7 +334,7 @@ class OrderService
     public function paid(string $callbackNo): bool
     {
         $order = $this->order;
-        if ($order->status !== Order::STATUS_PENDING) {
+        if ((int) $order->status !== Order::STATUS_PENDING) {
             return true;
         }
 
@@ -610,14 +610,24 @@ class OrderService
 
     private function resetSubscriptionTraffic(Order $order): void
     {
-        $subscription = app(UserSubscriptionService::class)->resolveOrderSubscription($this->user, $order);
-        if ($subscription) {
-            app(TrafficResetService::class)->performResetSubscription($subscription, TrafficResetLog::SOURCE_ORDER);
-            $order->subscription_id = $subscription->id;
-            return;
+        if (!$this->user) {
+            throw new \RuntimeException('User does not exist');
         }
 
-        app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
+        $subscription = app(UserSubscriptionService::class)->resolveOrderSubscription($this->user, $order);
+        if (!$subscription || (int) $subscription->plan_id !== (int) $order->plan_id) {
+            throw new \RuntimeException('Target subscription does not exist');
+        }
+
+        if (!app(TrafficResetService::class)->performResetSubscription(
+            $subscription,
+            TrafficResetLog::SOURCE_ORDER,
+            TrafficResetLog::TYPE_PURCHASE,
+        )) {
+            throw new \RuntimeException('Failed to reset subscription traffic');
+        }
+
+        $order->subscription_id = $subscription->id;
     }
 
     private function getSurplusValue(UserSubscription $subscription, Order $order): void

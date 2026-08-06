@@ -145,7 +145,7 @@ class UserController extends Controller
             ->first();
         $user->load('subscriptions.plan');
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
-        $user['subscriptions'] = $this->formatSubscriptions($user);
+        $user->setRelation('subscriptions', collect($this->formatSubscriptions($user)));
         return $this->success($user);
     }
 
@@ -213,7 +213,7 @@ class UserController extends Controller
         $user['node_export_url'] = Helper::getNodeExportUrl($user['token']);
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
-        $user['subscriptions'] = $this->formatSubscriptions($user);
+        $user->setRelation('subscriptions', collect($this->formatSubscriptions($user)));
         $user = HookManager::filter('user.subscribe.response', $user);
         return $this->success($user);
     }
@@ -224,10 +224,13 @@ class UserController extends Controller
             ->sortByDesc('id')
             ->map(function ($subscription) use ($user) {
                 /** @var UserSubscription $subscription */
+                $plan = $subscription->plan;
+                $prices = $plan instanceof Plan ? ($plan->prices ?? []) : [];
+                $resetPrice = $prices[Plan::PERIOD_RESET_TRAFFIC] ?? null;
                 $payload = [
                     'id' => $subscription->id,
                     'plan_id' => $subscription->plan_id,
-                    'plan' => $subscription->plan,
+                    'plan' => $plan,
                     'status' => $subscription->status,
                     'started_at' => $subscription->started_at,
                     'expired_at' => $subscription->expired_at,
@@ -242,6 +245,11 @@ class UserController extends Controller
                     'next_reset_at' => $subscription->next_reset_at,
                     'last_reset_at' => $subscription->last_reset_at,
                     'reset_count' => $subscription->reset_count,
+                    // PlanResource exposes legacy prices in cents; keep this field consistent.
+                    'reset_price' => $resetPrice !== null ? (int) round((float) $resetPrice * 100) : null,
+                    'can_reset_traffic' => $subscription->isActive()
+                        && $plan instanceof Plan
+                        && $plan->canResetTraffic(),
                 ];
 
                 if (!empty($user->token)) {

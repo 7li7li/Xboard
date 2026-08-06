@@ -62,6 +62,10 @@ class PlanService
         }
 
         if ($periodKey === Plan::PERIOD_RESET_TRAFFIC) {
+            if (!$this->canResetTraffic($this->plan)) {
+                throw new ApiException(__('This payment period cannot be purchased, please choose another period'));
+            }
+
             $this->validateResetTrafficPurchase($user, $subscriptionId);
             return;
         }
@@ -145,7 +149,7 @@ class PlanService
     {
         $query = UserSubscription::where('user_id', $user->id)
             ->where('plan_id', $this->plan->id)
-            ->available();
+            ->active();
 
         if ($subscriptionId) {
             $query->where('id', $subscriptionId);

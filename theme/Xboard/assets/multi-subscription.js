@@ -42,6 +42,9 @@
     exportNodes: '\u5bfc\u51fa\u8282\u70b9',
     exportAllNodes: '\u5bfc\u51fa\u5168\u90e8\u8282\u70b9',
     renew: '\u7eed\u8d39',
+    resetPackage: '\u6d41\u91cf\u91cd\u7f6e\u5305',
+    resetUnavailable: '\u8be5\u8ba2\u9605\u65e0\u6cd5\u8d2d\u4e70\u6d41\u91cf\u91cd\u7f6e\u5305',
+    confirmReset: '\u786e\u8ba4\u8d2d\u4e70',
     renewAll: '\u7eed\u8d39\u6240\u6709\u5957\u9910',
     renewAllSubscriptions: '\u7eed\u8d39\u6240\u6709\u5957\u9910\u8ba2\u9605',
     renewUnavailable: '\u8be5\u8ba2\u9605\u65e0\u6cd5\u7eed\u8d39',
@@ -306,6 +309,31 @@
 
   function formatCents(value) {
     return formatPrice(Number(value || 0) / 100);
+  }
+
+  function resetPriceCents(subscription) {
+    if (subscription?.reset_price !== null && subscription?.reset_price !== undefined) {
+      return Math.max(0, Number(subscription.reset_price) || 0);
+    }
+
+    const prices = subscription?.plan?.prices || {};
+    if (prices.reset_traffic !== null && prices.reset_traffic !== undefined) {
+      return Math.max(0, Math.round((Number(prices.reset_traffic) || 0) * 100));
+    }
+
+    return Math.max(0, Number(subscription?.plan?.reset_price) || 0);
+  }
+
+  function isResettableSubscription(subscription) {
+    if (!subscription || Number(subscription.status) !== 1) return false;
+    if (subscription.expired_at && Number(subscription.expired_at) <= Date.now() / 1000) {
+      return false;
+    }
+    if (subscription.can_reset_traffic !== undefined && !subscription.can_reset_traffic) {
+      return false;
+    }
+
+    return resetPriceCents(subscription) > 0;
   }
 
   function ensureStyle() {
@@ -746,7 +774,24 @@
 
     const modal = openModal(`${text.choosePeriod} - ${planName(subscription)}`, body);
     modal.querySelectorAll('[data-renew-period]').forEach((button) => {
-      button.addEventListener('click', () => createRenewOrder(subscription, button.dataset.renewPeriod));
+      button.addEventListener('click', () => createSubscriptionOrder(subscription, button.dataset.renewPeriod, 'renew'));
+    });
+  }
+
+  function openResetModal(subscription) {
+    if (!isResettableSubscription(subscription)) {
+      showMessage('error', text.resetUnavailable);
+      return;
+    }
+
+    const body = [
+      `<div class="xboard-multi-subscriptions-modal__summary"><span>${text.resetPackage}</span><strong>${escapeHtml(formatCents(resetPriceCents(subscription)))}</strong></div>`,
+      `<button class="xboard-multi-subscriptions-modal__button" type="button" data-reset-confirm>${text.confirmReset}</button>`,
+    ].join('');
+
+    const modal = openModal(`${text.resetPackage} - ${planName(subscription)}`, body);
+    modal.querySelector('[data-reset-confirm]')?.addEventListener('click', () => {
+      createSubscriptionOrder(subscription, 'reset_price', 'reset');
     });
   }
 
@@ -992,7 +1037,7 @@
     window.setTimeout(requestOpenRenewAllModal, 0);
   }
 
-  async function createRenewOrder(subscription, period) {
+  async function createSubscriptionOrder(subscription, period, intent) {
     const token = getAuthToken();
     if (!token) {
       showMessage('error', text.loginRequired);
@@ -1014,7 +1059,7 @@
           plan_id: subscription.plan_id,
           period,
           subscription_id: subscription.id,
-          intent: 'renew',
+          intent,
         }),
       });
       const payload = await response.json();
@@ -1100,6 +1145,9 @@
       }
       if (action === 'renew') {
         openRenewModal(subscription);
+      }
+      if (action === 'reset') {
+        openResetModal(subscription);
       }
     });
   }
@@ -1266,6 +1314,9 @@
       const warn = status === text.active ? '' : ' xboard-subscription-item__status--warn';
       const name = planName(subscription);
       const renewDisabled = isRenewableSubscription(subscription) ? '' : ' disabled';
+      const resetButton = isResettableSubscription(subscription)
+        ? `<button class="xboard-subscription-item__button" type="button" data-xboard-action="reset" data-subscription-id="${escapeHtml(subscription.id)}">${text.resetPackage}</button>`
+        : '';
       const resetText = subscription.next_reset_at
         ? ` <span aria-hidden="true">/</span> ${text.nextReset} ${escapeHtml(formatDate(subscription.next_reset_at))}`
         : '';
@@ -1288,6 +1339,7 @@
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="copy" data-subscription-id="${escapeHtml(subscription.id)}">${text.copyLink}</button>
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="client" data-subscription-id="${escapeHtml(subscription.id)}">${text.oneClick}</button>
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="export" data-subscription-id="${escapeHtml(subscription.id)}">${text.exportNodes}</button>
+            ${resetButton}
             <button class="xboard-subscription-item__button" type="button" data-xboard-action="renew" data-subscription-id="${escapeHtml(subscription.id)}"${renewDisabled}>${text.renew}</button>
           </div>
         </article>
