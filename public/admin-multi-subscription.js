@@ -30,6 +30,9 @@
     expired: '\u5df2\u8fc7\u671f',
     longTerm: '\u957f\u671f\u6709\u6548',
     empty: '\u6682\u65e0\u8ba2\u9605',
+    noActive: '\u6682\u65e0\u6709\u6548\u8ba2\u9605',
+    showHistory: '\u663e\u793a\u5386\u53f2\u8ba2\u9605',
+    activeOnly: '\u53ea\u770b\u6709\u6548\u8ba2\u9605',
     notLoggedIn: '\u672a\u83b7\u53d6\u5230\u540e\u53f0\u767b\u5f55\u51ed\u636e',
     loadFailed: '\u52a0\u8f7d\u5931\u8d25',
     saved: '\u5df2\u4fdd\u5b58',
@@ -42,6 +45,7 @@
   let currentUser = null;
   let currentLookup = null;
   let currentUserId = null;
+  let showHistory = false;
   let plans = [];
   let groups = [];
   let loading = false;
@@ -392,6 +396,15 @@
     return Number.isFinite(timestamp) ? timestamp : null;
   }
 
+  function subscriptionStatus(subscription) {
+    const status = Number(subscription.status);
+    if (status === 1 && subscription.expired_at !== null && subscription.expired_at !== undefined
+      && Number(subscription.expired_at) <= Math.floor(Date.now() / 1000)) {
+      return 3;
+    }
+    return status;
+  }
+
   function statusLabel(status) {
     const value = Number(status);
     if (value === 1) return text.active;
@@ -406,7 +419,7 @@
 
   function planName(planId) {
     const plan = plans.find((item) => Number(item.id) === Number(planId));
-    return plan?.name || `#${planId}`;
+    return plan?.name || (planId ? `#${planId}` : '-');
   }
 
   function showToast(message) {
@@ -463,7 +476,8 @@
   }
 
   function renderManager() {
-    const subscriptions = Array.isArray(currentUser?.subscriptions) ? currentUser.subscriptions : [];
+    const subscriptions = (Array.isArray(currentUser?.subscriptions) ? currentUser.subscriptions : [])
+      .filter((subscription) => showHistory || subscriptionStatus(subscription) === 1);
     return `
       <div class="xboard-ms-summary">
         <div class="xboard-ms-kv"><span>${text.user}</span><strong>${escapeHtml(currentUser.email)}</strong></div>
@@ -473,8 +487,9 @@
       </div>
       <div class="xboard-ms-actions" style="margin-bottom:12px">
         <button class="xboard-ms-btn xboard-ms-btn-primary" type="button" data-ms-action="add">${text.add}</button>
+        <button class="xboard-ms-btn" type="button" data-ms-action="toggle-history" aria-pressed="${showHistory}">${showHistory ? text.activeOnly : text.showHistory}</button>
       </div>
-      ${subscriptions.length ? renderTable(subscriptions) : `<div class="xboard-ms-empty">${text.empty}</div>`}
+      ${subscriptions.length ? renderTable(subscriptions) : `<div class="xboard-ms-empty">${showHistory ? text.empty : text.noActive}</div>`}
       <div data-ms-form-container></div>
     `;
   }
@@ -497,11 +512,12 @@
         <tbody>
           ${subscriptions.map((subscription) => {
             const used = Number(subscription.u || 0) + Number(subscription.d || 0);
+            const status = subscriptionStatus(subscription);
             return `
               <tr>
                 <td>#${escapeHtml(subscription.id)}</td>
                 <td>${escapeHtml(subscription.plan?.name || planName(subscription.plan_id))}</td>
-                <td><span class="xboard-ms-status xboard-ms-status-${escapeHtml(subscription.status)}">${escapeHtml(statusLabel(subscription.status))}</span></td>
+                <td><span class="xboard-ms-status xboard-ms-status-${escapeHtml(status)}">${escapeHtml(statusLabel(status))}</span></td>
                 <td>${escapeHtml(formatDate(subscription.expired_at))}</td>
                 <td>${escapeHtml(formatGb(used))} / ${escapeHtml(formatGb(subscription.transfer_enable))}</td>
                 <td>${escapeHtml(groupName(subscription.group_id))}</td>
@@ -626,6 +642,7 @@
 
   function openManager(lookup = '', userId = null) {
     currentUser = null;
+    showHistory = false;
     currentLookup = normalizeLookup(lookup);
     currentUserId = normalizeUserId(userId);
     openModal();
@@ -735,6 +752,10 @@
       const action = button.dataset.msAction;
       if (action === 'close') closeModal();
       if (action === 'refresh' && (currentLookup || currentUserId)) loadUser(currentLookup, currentUserId);
+      if (action === 'toggle-history') {
+        showHistory = !showHistory;
+        openModal();
+      }
       if (action === 'add') showForm();
       if (action === 'edit') showForm(subscriptionById(button.dataset.id));
       if (action === 'delete') deleteSubscription(button.dataset.id);

@@ -112,6 +112,11 @@ class TrafficResetService
   {
     try {
       return DB::transaction(function () use ($subscription, $triggerSource, $resetType) {
+        // Use the same lock order as traffic consumption and legacy backfill.
+        if (!User::whereKey($subscription->user_id)->lockForUpdate()->first()) {
+          return false;
+        }
+
         /** @var UserSubscription|null $locked */
         $locked = UserSubscription::lockForUpdate()->find($subscription->id);
         if (!$locked || !$locked->isActive()) {

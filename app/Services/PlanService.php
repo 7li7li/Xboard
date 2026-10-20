@@ -72,10 +72,16 @@ class PlanService
 
         $targetSubscription = null;
         if ($subscriptionId) {
-            $targetSubscription = UserSubscription::where('id', $subscriptionId)
-                ->where('user_id', $user->id)
-                ->active()
-                ->first();
+            $query = UserSubscription::where('id', $subscriptionId)
+                ->where('user_id', $user->id);
+
+            if ($intent === OrderService::INTENT_RENEW) {
+                $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
+            } else {
+                $query->active();
+            }
+
+            $targetSubscription = $query->first();
 
             if (!$targetSubscription) {
                 throw new ApiException(__('Subscription plan does not exist'));
@@ -97,8 +103,13 @@ class PlanService
 
     protected function resolveImplicitTargetSubscription(User $user, string $intent): ?UserSubscription
     {
-        $query = UserSubscription::where('user_id', $user->id)
-            ->active();
+        $query = UserSubscription::where('user_id', $user->id);
+
+        if ($intent === OrderService::INTENT_RENEW) {
+            $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
+        } else {
+            $query->active();
+        }
 
         if ($intent === OrderService::INTENT_RENEW) {
             $query->where('plan_id', $this->plan->id);

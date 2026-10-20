@@ -376,7 +376,10 @@ class UserController extends Controller
             return $this->fail([400202, 'User does not exist']);
         }
 
-        app(UserSubscriptionService::class)->backfillLegacyTrafficToSubscriptions($user);
+        $subscriptionService = app(UserSubscriptionService::class);
+        if (!$subscriptionService->backfillLegacyTrafficToSubscriptions($user)) {
+            $subscriptionService->syncUserAggregate($user);
+        }
         $user->refresh()->load(['plan:id,name', 'invite_user:id,email', 'group:id,name', 'subscriptions.plan']);
 
         return $this->success(self::transformUserData($user));

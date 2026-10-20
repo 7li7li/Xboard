@@ -3,6 +3,7 @@
 namespace Tests\Feature\Server;
 
 use App\Jobs\TrafficFetchJob;
+use App\Jobs\StatUserJob;
 use App\Models\Plan;
 use App\Models\Server;
 use App\Models\ServerMachine;
@@ -10,11 +11,13 @@ use App\Models\StatServer;
 use App\Models\StatUser;
 use App\Models\User;
 use App\Models\UserSubscription;
+use App\Services\UserSubscriptionService;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class ServerHandshakeTest extends TestCase
@@ -383,6 +386,98 @@ class ServerHandshakeTest extends TestCase
             'u' => 111,
             'd' => 222,
         ]);
+    }
+
+    #[DataProvider('inactiveSubscriptionProvider')]
+    public function test_traffic_does_not_charge_inactive_subscription_usage_again(array $overrides): void
+    {
+        config()->set('queue.default', 'sync');
+
+        $server = $this->makeServer();
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $inactive = $this->makeSubscription($user, $plan, ['u' => 1000, 'd' => 2000]);
+        $active = $this->makeSubscription($user, $plan);
+        app(UserSubscriptionService::class)->syncUserAggregate($user);
+
+        // The cached user totals still include this subscription when it becomes inactive.
+        $inactive->forceFill($overrides)->save();
+        Redis::shouldReceive('sadd')->twice();
+
+        foreach ([[300, 400], [100, 200]] as $traffic) {
+            $this->postJson('/api/v2/server/report', [
+                'token' => 'server-token',
+                'node_id' => $server->id,
+                'traffic' => [$user->id => $traffic],
+            ])->assertOk();
+        }
+
+        $this->assertSame(1000, $inactive->refresh()->u);
+        $this->assertSame(2000, $inactive->d);
+        $this->assertSame(400, $active->refresh()->u);
+        $this->assertSame(600, $active->d);
+        $this->assertSame(400, (int) $user->refresh()->u);
+        $this->assertSame(600, (int) $user->d);
+        $this->assertSame((int) $user->u, (int) StatUser::where('user_id', $user->id)->sum('u'));
+        $this->assertSame((int) $user->d, (int) StatUser::where('user_id', $user->id)->sum('d'));
+    }
+
+    public static function inactiveSubscriptionProvider(): array
+    {
+        return [
+            'elapsed expiry' => [['expired_at' => 1]],
+            'expired status' => [['status' => UserSubscription::STATUS_EXPIRED]],
+            'cancelled status' => [['status' => UserSubscription::STATUS_CANCELLED]],
+        ];
+    }
+
+    public function test_multiple_subscriptions_split_rate_adjusted_traffic_without_extra_deductions(): void
+    {
+        $server = $this->makeServer(['rate' => '1.5']);
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $first = $this->makeSubscription($user, $plan, [
+            'transfer_enable' => 100,
+            'expired_at' => time() + 3600,
+        ]);
+        $second = $this->makeSubscription($user, $plan);
+        Redis::shouldReceive('sadd')->twice();
+
+        foreach ([[101, 203], [11, 19]] as $traffic) {
+            $data = [$user->id => $traffic];
+            (new TrafficFetchJob($server->toArray(), $data, $server->type, time()))->handle();
+            (new StatUserJob($server->toArray(), $data, $server->type))->handle();
+        }
+
+        $this->assertSame(100, $first->refresh()->getTotalUsedTraffic());
+        $this->assertSame(399, $second->refresh()->getTotalUsedTraffic());
+        $this->assertSame(167, (int) $user->refresh()->u);
+        $this->assertSame(332, (int) $user->d);
+        $this->assertSame(167, (int) $user->subscriptions()->sum('u'));
+        $this->assertSame(332, (int) $user->subscriptions()->sum('d'));
+        $this->assertSame(167, (int) StatUser::where('user_id', $user->id)->sum('u'));
+        $this->assertSame(332, (int) StatUser::where('user_id', $user->id)->sum('d'));
+    }
+
+    public function test_legacy_traffic_backfill_rolls_back_if_aggregate_sync_fails(): void
+    {
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan, ['u' => 1000, 'd' => 2000]);
+        $subscription = $this->makeSubscription($user, $plan);
+        $service = \Mockery::mock(UserSubscriptionService::class)->makePartial();
+        $service->shouldReceive('syncUserAggregate')->once()->andThrow(new \RuntimeException('sync failed'));
+
+        try {
+            $service->backfillLegacyTrafficToSubscriptions($user);
+            $this->fail('Expected aggregate sync to fail');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('sync failed', $e->getMessage());
+        }
+
+        $this->assertSame(0, $subscription->refresh()->u);
+        $this->assertSame(0, $subscription->d);
+        $this->assertSame(1000, (int) $user->refresh()->u);
+        $this->assertSame(2000, (int) $user->d);
     }
 
     private function makeServer(array $overrides = []): Server

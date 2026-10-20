@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Server;
+use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Models\UserSubscription;
 use App\Services\NodeSyncService;
@@ -168,6 +169,9 @@ class UserSubscriptionService
     public function renewSubscription(UserSubscription $subscription, Plan $plan, string $period, ?Order $order = null): UserSubscription
     {
         $period = PlanService::getPeriodKey($period);
+        $wasExpired = (int) $subscription->status === UserSubscription::STATUS_EXPIRED
+            || ($subscription->expired_at !== null && $subscription->expired_at <= time());
+        $shouldResetTraffic = $wasExpired || $period === Plan::PERIOD_ONETIME;
 
         $subscription->forceFill([
             'plan_id' => $plan->id,
@@ -189,6 +193,18 @@ class UserSubscriptionService
         if ($order && !$order->subscription_id) {
             $order->subscription_id = $subscription->id;
             $order->save();
+        }
+
+        if ($shouldResetTraffic) {
+            if (!app(TrafficResetService::class)->performResetSubscription(
+                $subscription,
+                TrafficResetLog::SOURCE_ORDER,
+                TrafficResetLog::TYPE_PURCHASE
+            )) {
+                throw new \RuntimeException('Failed to reset traffic after subscription renewal');
+            }
+
+            return $subscription->refresh();
         }
 
         $this->syncUserAggregate($subscription->user);
@@ -305,6 +321,8 @@ class UserSubscriptionService
 
             if ($requireActive) {
                 $query->active();
+            } else {
+                $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
             }
 
             return $query->first();
@@ -315,6 +333,8 @@ class UserSubscriptionService
 
         if ($requireActive) {
             $query->active();
+        } else {
+            $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
         }
 
         $matches = $query
@@ -428,9 +448,14 @@ class UserSubscriptionService
             return;
         }
 
-        $this->backfillLegacyTrafficToSubscriptions($user, $groupIds);
-
         DB::transaction(function () use ($user, $groupIds, $upload, $download, $total) {
+            // Serialize reports across all of this user's subscription groups.
+            if (!User::whereKey($user->id)->lockForUpdate()->first()) {
+                return;
+            }
+
+            $this->backfillLegacyTrafficToSubscriptions($user, $groupIds);
+
             $subscriptions = UserSubscription::with('plan')
                 ->where('user_id', $user->id)
                 ->where(function ($query) use ($groupIds) {
@@ -517,24 +542,26 @@ class UserSubscriptionService
 
             $subscriptions = UserSubscription::with('plan')
                 ->where('user_id', $lockedUser->id)
-                ->active()
                 ->lockForUpdate()
                 ->orderByRaw('expired_at IS NULL ASC')
                 ->orderBy('expired_at')
                 ->orderBy('id')
                 ->get();
 
-            if ($subscriptions->isEmpty()) {
+            $activeSubscriptions = $subscriptions->filter(fn(UserSubscription $subscription) => $subscription->isActive());
+            if ($activeSubscriptions->isEmpty()) {
                 return false;
             }
 
+            // Inactive subscriptions still account for previously charged traffic.
+            // A stale user aggregate must not move that usage to an active subscription.
             $uploadDelta = max(0, $legacyUpload - (int) $subscriptions->sum('u'));
             $downloadDelta = max(0, $legacyDownload - (int) $subscriptions->sum('d'));
             if (($uploadDelta + $downloadDelta) <= 0) {
                 return false;
             }
 
-            $target = $this->chooseLegacyTrafficBackfillTarget($subscriptions, $preferredGroupIds);
+            $target = $this->chooseLegacyTrafficBackfillTarget($activeSubscriptions, $preferredGroupIds);
             if (!$target) {
                 return false;
             }
@@ -543,11 +570,13 @@ class UserSubscriptionService
             $target->d = (int) ($target->d ?? 0) + $downloadDelta;
             $target->save();
 
+            $this->syncUserAggregate($lockedUser);
+
             return true;
         });
 
         if ($changed) {
-            $this->syncUserAggregate($user);
+            $user->refresh();
         }
 
         return $changed;
