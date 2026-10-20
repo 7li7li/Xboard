@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Server;
+use App\Models\TrafficResetLog;
 use App\Models\User;
 use App\Models\UserSubscription;
 use App\Services\NodeSyncService;
@@ -168,6 +169,9 @@ class UserSubscriptionService
     public function renewSubscription(UserSubscription $subscription, Plan $plan, string $period, ?Order $order = null): UserSubscription
     {
         $period = PlanService::getPeriodKey($period);
+        $wasExpired = (int) $subscription->status === UserSubscription::STATUS_EXPIRED
+            || ($subscription->expired_at !== null && $subscription->expired_at <= time());
+        $shouldResetTraffic = $wasExpired || $period === Plan::PERIOD_ONETIME;
 
         $subscription->forceFill([
             'plan_id' => $plan->id,
@@ -189,6 +193,18 @@ class UserSubscriptionService
         if ($order && !$order->subscription_id) {
             $order->subscription_id = $subscription->id;
             $order->save();
+        }
+
+        if ($shouldResetTraffic) {
+            if (!app(TrafficResetService::class)->performResetSubscription(
+                $subscription,
+                TrafficResetLog::SOURCE_ORDER,
+                TrafficResetLog::TYPE_PURCHASE
+            )) {
+                throw new \RuntimeException('Failed to reset traffic after subscription renewal');
+            }
+
+            return $subscription->refresh();
         }
 
         $this->syncUserAggregate($subscription->user);
@@ -305,6 +321,8 @@ class UserSubscriptionService
 
             if ($requireActive) {
                 $query->active();
+            } else {
+                $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
             }
 
             return $query->first();
@@ -315,6 +333,8 @@ class UserSubscriptionService
 
         if ($requireActive) {
             $query->active();
+        } else {
+            $query->whereIn('status', [UserSubscription::STATUS_ACTIVE, UserSubscription::STATUS_EXPIRED]);
         }
 
         $matches = $query

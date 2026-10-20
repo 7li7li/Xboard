@@ -61,6 +61,84 @@ class TrafficResetPackageTest extends TestCase
         ]);
     }
 
+    public function test_renewing_an_expired_subscription_resets_its_used_traffic(): void
+    {
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan, [
+            'expired_at' => time() - 3_600,
+            'transfer_enable' => 1_000,
+            'u' => 600,
+            'd' => 400,
+        ]);
+        app(UserSubscriptionService::class)->syncUserAggregate($user);
+
+        $order = OrderService::createBatchRenewalFromRequest($user, [[
+            'subscription_id' => $subscription->id,
+            'period' => 'month_price',
+        ]]);
+
+        $this->assertTrue((new OrderService($order))->paid('expired-renewal-callback'));
+
+        $subscription->refresh();
+        $user->refresh();
+        $order->refresh();
+
+        $this->assertSame(UserSubscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(0, $subscription->u);
+        $this->assertSame(0, $subscription->d);
+        $this->assertSame($plan->transfer_enable * 1_073_741_824, $subscription->transfer_enable);
+        $this->assertSame(1, $subscription->reset_count);
+        $this->assertSame(0, $user->u);
+        $this->assertSame(0, $user->d);
+        $this->assertSame(Order::STATUS_COMPLETED, $order->status);
+        $this->assertDatabaseHas('v2_traffic_reset_logs', [
+            'user_id' => $user->id,
+            'reset_type' => TrafficResetLog::TYPE_PURCHASE,
+            'trigger_source' => TrafficResetLog::SOURCE_ORDER,
+        ]);
+    }
+
+    public function test_single_renewal_can_reactivate_an_expired_subscription_and_reset_traffic(): void
+    {
+        $plan = $this->makePlan();
+        $user = $this->makeUser($plan);
+        $subscription = $this->makeSubscription($user, $plan, [
+            'expired_at' => time() - 3_600,
+            'transfer_enable' => 1_000,
+            'u' => 600,
+            'd' => 400,
+        ]);
+        app(UserSubscriptionService::class)->syncUserAggregate($user);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson('/api/v1/user/order/save', [
+            'plan_id' => $plan->id,
+            'subscription_id' => $subscription->id,
+            'period' => 'month_price',
+            'intent' => OrderService::INTENT_RENEW,
+        ]);
+
+        $response->assertOk();
+        $order = Order::where('trade_no', $response->json('data'))->firstOrFail();
+        $this->assertSame(Order::TYPE_RENEWAL, $order->type);
+        $this->assertSame($subscription->id, $order->subscription_id);
+        $this->assertTrue((new OrderService($order))->paid('expired-single-renewal-callback'));
+
+        $subscription->refresh();
+        $user->refresh();
+        $order->refresh();
+
+        $this->assertSame(UserSubscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(0, $subscription->u);
+        $this->assertSame(0, $subscription->d);
+        $this->assertSame($plan->transfer_enable * 1_073_741_824, $subscription->transfer_enable);
+        $this->assertSame(1, $subscription->reset_count);
+        $this->assertSame(0, $user->u);
+        $this->assertSame(0, $user->d);
+        $this->assertSame(Order::STATUS_COMPLETED, $order->status);
+    }
+
     public function test_multiple_subscriptions_only_reset_the_selected_subscription(): void
     {
         $plan = $this->makePlan();

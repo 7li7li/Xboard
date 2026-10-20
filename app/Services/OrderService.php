@@ -252,7 +252,11 @@ class OrderService
             return;
         }
 
-        $target = $subscriptionService->resolveOrderSubscription($user, $order);
+        $target = $subscriptionService->resolveOrderSubscription(
+            $user,
+            $order,
+            $intent !== self::INTENT_RENEW
+        );
 
         if ($intent === self::INTENT_PURCHASE && !$order->subscription_id) {
             $target = $subscriptionService->resolveSamePlanRenewalTarget($user, (int) $order->plan_id);
@@ -429,7 +433,11 @@ class OrderService
             return;
         }
 
-        $target = $subscriptionService->resolveOrderSubscription($this->user, $order);
+        $target = $subscriptionService->resolveOrderSubscription(
+            $this->user,
+            $order,
+            (int) $order->type !== Order::TYPE_RENEWAL
+        );
 
         match ((int) $order->type) {
             Order::TYPE_RENEWAL => $target
@@ -441,12 +449,6 @@ class OrderService
             default => $subscriptionService->createSubscription($this->user, $plan, $order->period, $order),
         };
 
-        if ((int) $order->type === Order::TYPE_RENEWAL && (string) $order->period === Plan::PERIOD_ONETIME && $order->subscription_id) {
-            $subscription = UserSubscription::find($order->subscription_id);
-            if ($subscription) {
-                app(TrafficResetService::class)->performResetSubscription($subscription, TrafficResetLog::SOURCE_ORDER);
-            }
-        }
     }
 
     private static function normalizeBatchRenewalItems(User $user, array $requestedItems): array
@@ -587,10 +589,6 @@ class OrderService
             $period = PlanService::getPeriodKey((string) ($item['period'] ?? ''));
             $subscriptionService->renewSubscription($subscription, $plan, $period, $order);
             $renewedCount++;
-
-            if ($period === Plan::PERIOD_ONETIME) {
-                app(TrafficResetService::class)->performResetSubscription($subscription->refresh(), TrafficResetLog::SOURCE_ORDER);
-            }
         }
 
         if ($renewedCount === 0 && $skippedAmount <= 0) {
